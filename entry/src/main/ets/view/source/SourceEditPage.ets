@@ -407,6 +407,11 @@ export struct SourceEditPage {
                 .fontColor($r('app.color.text_secondary'))
                 .maxLines(2)
                 .width('100%')
+              Text('HarmonyOS NEXT 不提供"读取全部存储"的权限，本应用通过系统"选择目录"获取授权，' +
+                '并持久化保存；若授权失效请重新选择。TV / PC 上也可以直接使用内置的「应用目录」。')
+                .fontSize(11)
+                .fontColor($r('app.color.text_tertiary'))
+                .width('100%')
               if (this.errors.local.length > 0) {
                 Text(this.errors.local)
                   .fontSize(12)

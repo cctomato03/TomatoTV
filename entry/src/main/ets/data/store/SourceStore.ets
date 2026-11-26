@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { fileShare } from '@kit.CoreFileKit';
 import { preferences } from '@kit.ArkData';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { FileSource, SourceFactory, SourceType } from '../../model/FileSource';
@@ -45,6 +46,7 @@ export class SourceStore implements SecretResolver {
       this.prefs = preferences.getPreferencesSync(context, { name: STORE_NAME });
       this.reload();
       this.ensureBuiltin();
+      this.activateLocalPermissions();
     } catch (err) {
       Logger.error('SourceStore', '初始化来源存储失败', err as Error);
     }
@@ -66,6 +68,31 @@ export class SourceStore implements SecretResolver {
     } catch (err) {
       Logger.error('SourceStore', '读取来源失败', err as Error);
       this.items = [];
+    }
+  }
+
+  /**
+   * 重新激活"持久化目录授权"。
+   *
+   * HarmonyOS 的 Picker 授权需要 persistPermission 持久化，重启应用后还要
+   * activatePermission 才能继续访问；否则读目录会直接报没有权限
+   * （用户看到的就是"本地存储没有权限"）。这里对每个本机来源逐个激活，失败只记日志。
+   */
+  private activateLocalPermissions(): void {
+    for (const item of this.items) {
+      if (item.type !== SourceType.LOCAL) {
+        continue;
+      }
+      const uri: string = item.localUri;
+      if (!uri.startsWith('file://')) {
+        continue;
+      }
+      const policy: fileShare.PolicyInfo = { uri: uri, operationMode: fileShare.OperationMode.READ_MODE };
+      fileShare.activatePermission([policy]).then(() => {
+        Logger.info('SourceStore', `已激活目录授权: ${item.name}`);
+      }).catch((err: Error) => {
+        Logger.warn('SourceStore', `激活目录授权失败（需要重新选择目录）: ${item.name}`);
+      });
     }
   }
 

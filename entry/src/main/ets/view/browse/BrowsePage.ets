@@ -8,7 +8,7 @@ import { SettingsValidation, ViewMode } from '../../model/AppSettings';
 import { FsError, FsErrorKind, FsErrorText } from '../../data/fs/FileSystemClient';
 import { Breakpoint, Layout } from '../../utils/Breakpoint';
 import { BusKeys, EventBus } from '../../utils/EventBus';
-import { BrowseParam, DocParam, MediaParam, NavDefaults, Routes } from '../../navigation/AppNav';
+import { BrowseParam, DocParam, MediaParam, NavDefaults, Routes, SourceEditParam } from '../../navigation/AppNav';
 import { EmptyState } from '../../components/EmptyState';
 import { FileRow, FileTile } from '../../components/FileRow';
 import { Symbols } from '../../components/Symbols';
@@ -444,6 +444,14 @@ export struct BrowsePage {
         .fontColor($r('app.color.text_primary'))
         .textAlign(TextAlign.Center)
         .padding({ left: 32, right: 32 })
+      if (this.permissionRequired && this.sourceRef.type === SourceType.LOCAL) {
+        Text('HarmonyOS 不允许应用直接读取全部存储，目录访问需要在"选择目录"时授权；' +
+          '如果授权失效（重装、清除数据或目录被移动），请重新选择一次目录。')
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+          .textAlign(TextAlign.Center)
+          .padding({ left: 32, right: 32 })
+      }
       if (this.errorDetail.length > 0) {
         Text(this.errorDetail)
           .fontSize(11)
@@ -463,6 +471,22 @@ export struct BrowsePage {
           .onClick(() => {
             this.load(this.currentPath, false);
           })
+        if (this.permissionRequired && this.sourceRef.type === SourceType.LOCAL) {
+          Button('重新选择目录')
+            .type(ButtonType.Capsule)
+            .height(40)
+            .backgroundColor($r('app.color.brand'))
+            .fontColor(Color.White)
+            .focusable(true)
+            .onClick(() => {
+              const param: SourceEditParam = {
+                sourceId: this.param.sourceId,
+                initialType: SourceType.LOCAL,
+                isNew: false
+              };
+              this.stack.pushPathByName(Routes.SOURCE_EDIT, param);
+            })
+        }
         if (!this.restoreSnapshotAllowed()) {
           Button('返回')
             .type(ButtonType.Capsule)
