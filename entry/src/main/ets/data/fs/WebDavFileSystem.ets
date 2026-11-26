@@ -236,15 +236,36 @@ export class WebDavFileSystem implements FileSystemClient {
       if (status !== 200 && status !== 206) {
         throw WebDavFileSystem.mapStatus(status);
       }
-      if (response.result instanceof ArrayBuffer) {
-        return response.result as ArrayBuffer;
+      const body: ArrayBuffer | null = WebDavFileSystem.toArrayBuffer(response.result);
+      if (body === null || body.byteLength === 0) {
+        Logger.warn('WebDav', `Range 读取返回空数据 status=${status} url=${this.urlFor(path)}`);
+        return new ArrayBuffer(0);
       }
-      return new ArrayBuffer(0);
+      return body;
     } catch (err) {
       throw WebDavFileSystem.mapException(err as Error);
     } finally {
       request.destroy();
     }
+  }
+
+  /** 兼容不同返回类型：部分实现会忽略 expectDataType 直接返回字符串 */
+  private static toArrayBuffer(result: string | Object | ArrayBuffer): ArrayBuffer | null {
+    if (result instanceof ArrayBuffer) {
+      return result as ArrayBuffer;
+    }
+    if (typeof result === 'string') {
+      const text: string = result as string;
+      if (text.length === 0) {
+        return null;
+      }
+      const bytes: Uint8Array = new Uint8Array(text.length);
+      for (let i = 0; i < text.length; i++) {
+        bytes[i] = text.charCodeAt(i) & 0xFF;
+      }
+      return bytes.buffer as ArrayBuffer;
+    }
+    return null;
   }
 
   async openStream(path: string, position?: number): Promise<InputStreamLike> {

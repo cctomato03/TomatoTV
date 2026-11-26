@@ -278,11 +278,19 @@ export class RemoteCache {
         if (buffer.byteLength === 0) {
           break;
         }
+        // 服务端忽略 Range 时可能一直返回整文件：已收满即停止，避免无限追加
+        if (size > 0 && offset > 0 && buffer.byteLength > chunkSize) {
+          Logger.warn('RemoteCache', '服务端未按 Range 返回数据，已提前结束');
+          break;
+        }
         const written: number = fs.writeSync(file.fd, buffer);
         received += written;
         offset += buffer.byteLength;
         if (onProgress !== undefined) {
           onProgress(received, size);
+        }
+        if (size > 0 && received >= size) {
+          break;
         }
         if (buffer.byteLength < chunkSize) {
           break;
@@ -295,8 +303,34 @@ export class RemoteCache {
         Logger.warn('RemoteCache', '关闭缓存文件失败');
       }
     }
+    // 校验：空数据或与已知大小不一致都视为失败，避免把坏缓存当成"已缓存"永久命中
+    if (received === 0 || (size > 0 && received !== size)) {
+      this.discard(sourceId, path);
+      throw new FsError(FsErrorKind.CACHE, `缓存下载不完整 received=${received} expected=${size}`);
+    }
     await this.finishWrite(sourceId, path, received, true);
     return target;
+  }
+
+  /** 丢弃某个缓存条目（文件 + 索引 + meta），用于下载失败时清理 */
+  discard(sourceId: string, path: string): void {
+    this.keyOf(path).then((key: string) => {
+      try {
+        fs.rmdirSync(this.entryDir(sourceId, key));
+      } catch (err) {
+        Logger.debug('RemoteCache', '删除缓存条目失败');
+      }
+      const next: IndexRecord[] = [];
+      for (const item of this.index) {
+        if (item.key !== key) {
+          next.push(item);
+        }
+      }
+      this.index = next;
+      this.saveIndex();
+    }).catch((err: Error) => {
+      Logger.warn('RemoteCache', '清理缓存条目失败');
+    });
   }
 
   decode(bytes: Uint8Array): string {
