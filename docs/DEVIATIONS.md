@@ -64,6 +64,14 @@
      EncryptedRandomSessionKey，可能导致会话密钥与签名不匹配；已改为
      `UNICODE|REQUEST_TARGET|NTLM|ALWAYS_SIGN|EXTENDED_SESSIONSECURITY|TARGET_INFO|128|56`。
   另外还补了：请求 20s 超时、目录枚举防死循环、错误信息带上"命令名 + 状态码"。
+- v1.5.1 修复（真机反馈 `STATUS_INVALID_PARAMETER @SESSION_SETUP`）：
+  4. 携带 NTLM Type3 的**第二个 SESSION_SETUP 请求，header 里的 SessionId 必须用服务端
+     在上一响应中分配的会话 id**（之前一直发 0），PreviousSessionId 必须是 0。
+     Windows / Samba 对 SessionId=0 的 Type3 一律返回 STATUS_INVALID_PARAMETER。
+     修复后本机 Windows 服务端的返回从 `STATUS_INVALID_PARAMETER(0xc000000d)`
+     变为 `STATUS_LOGON_FAILURE(0xc000006d)`（凭据是假的），证明 NEGOTIATE/NTLM 全链路已被服务端接受。
+     一致性测试服务端也加了对应断言（首个请求 SessionId 必须 0、Type3 必须等于会话 id）。
+  另外增加：SPNEGO 形式被拒时自动改用裸 NTLMSSP 重试一次。
 - 仍未验证 / 限制：
   - 本机 Windows 服务端在 SESSION_SETUP 阶段返回 `STATUS_INVALID_PARAMETER`，
     第三方参考客户端（`@marsaud/smb2`）在该机器上同样被拒，判断是 Windows 的 NTLM
@@ -225,3 +233,11 @@ v1.4.1 之前，远程图片是先把字节落到缓存文件，再把**裸沙�
 
 WebDAV 侧同时加固：`readRange` 兼容服务端返回字符串而非 ArrayBuffer 的情况，
 空数据会打日志而不是静默返回空缓冲。
+
+v1.5.1 追加：
+- **目录内缩略图**：新增 `utils/ThumbnailService.ets`（内存缓存 60 张 + LRU、并发 2、去重、
+  远程复用 RemoteCache），列表行与网格单元在 `aboutToAppear` 就异步加载缩略图，
+  解码尺寸 192px（约 9MB 上限），离开浏览页时清空。
+- **查看器轮播**：像素改为按路径缓存（LRU 5 张）+ 预解码左右相邻图，左右滑动命中缓存即刻出图；
+  未命中时先显示加载态再替换，不会再出现"滑过去了但图没变"；Swiper 的 index 只用于初始页，
+  之后完全由 onChange 驱动，页码指示器才准确。

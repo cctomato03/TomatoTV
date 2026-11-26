@@ -115,6 +115,14 @@
 | 上架文档 | `docs/LOGO-AND-STORE-ASSETS.md`：素材清单、AGC 上架检查表、必须在真机截取的截图规格、隐私政策要点 |
 | 生成脚本 | `scripts/design/gen_logo.py`（含 `--verify` 字符画自检） |
 
+## 4.6 v1.5.1 增量（第二轮真机反馈）
+
+| 问题 | 处理 |
+|---|---|
+| 目录里图片不显示缩略图，必须点进去才看得到 | 新增 `ThumbnailService`（内存缓存 + LRU + 并发 2），列表行/网格单元进入即异步加载 192px 缩略图 |
+| 图片轮播左右切换"图不变"、页码索引不对 | 像素按路径缓存 + 预解码相邻图 + 未命中时显式加载态；Swiper index 只做初始页，之后由 onChange 驱动 |
+| SMB `STATUS_INVALID_PARAMETER @SESSION_SETUP` | 第二个 SESSION_SETUP 的 header SessionId 之前发的是 0，改为服务端分配的会话 id（PreviousSessionId 保持 0）；并用本机 Windows 服务端验证：错误从 INVALID_PARAMETER 变为 LOGON_FAILURE（凭据假），证明报文已被接受 |
+
 ## 5. 风险
 
 | 风险 | 影响 | 缓解 |
