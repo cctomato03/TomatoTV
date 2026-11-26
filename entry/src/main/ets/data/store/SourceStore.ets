@@ -1,0 +1,190 @@
+import { common } from '@kit.AbilityKit';
+import { preferences } from '@kit.ArkData';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { FileSource, SourceFactory, SourceType } from '../../model/FileSource';
+import { SecretStore } from '../crypto/SecretStore';
+import { SecretResolver } from '../repo/SecretResolver';
+import { Logger } from '../../utils/Logger';
+
+const STORE_NAME: string = 'tomato_sources';
+const KEY_SOURCES: string = 'sources_json';
+export const BUILTIN_LOCAL_ID: string = 'builtin_local';
+
+function safeString(value: string | undefined, fallback: string): string {
+  return value === undefined || value === null ? fallback : value;
+}
+
+function safeNumber(value: number | undefined, fallback: number): number {
+  const numeric: number = value === undefined || value === null ? NaN : Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function safeBool(value: boolean | undefined, fallback: boolean): boolean {
+  return value === undefined || value === null ? fallback : value === true;
+}
+
+function safeType(value: SourceType | undefined): SourceType {
+  if (value === SourceType.WEBDAV || value === SourceType.SMB || value === SourceType.FTP ||
+    value === SourceType.LOCAL) {
+    return value;
+  }
+  return SourceType.LOCAL;
+}
+
+/**
+ * 存储来源配置。来源元数据存 preferences(JSON)，密码存 SecretStore（系统安全存储）。
+ */
+export class SourceStore implements SecretResolver {
+  private prefs: preferences.Preferences | null = null;
+  private items: FileSource[] = [];
+  private sandboxDir: string = '';
+
+  init(context: common.Context, sandboxDir: string): void {
+    this.sandboxDir = sandboxDir;
+    try {
+      this.prefs = preferences.getPreferencesSync(context, { name: STORE_NAME });
+      this.reload();
+      this.ensureBuiltin();
+    } catch (err) {
+      Logger.error('SourceStore', '初始化来源存储失败', err as Error);
+    }
+  }
+
+  reload(): void {
+    this.items = [];
+    if (this.prefs === null) {
+      return;
+    }
+    try {
+      const raw: preferences.ValueType = this.prefs.getSync(KEY_SOURCES, '');
+      if (typeof raw === 'string' && raw.length > 0) {
+        const parsed: FileSource[] = JSON.parse(raw) as FileSource[];
+        for (const item of parsed) {
+          this.items.push(SourceStore.normalize(item));
+        }
+      }
+    } catch (err) {
+      Logger.error('SourceStore', '读取来源失败', err as Error);
+      this.items = [];
+    }
+  }
+
+  private static normalize(item: FileSource): FileSource {
+    const type: SourceType = safeType(item.type);
+    const base: FileSource = SourceFactory.blank(type);
+    base.id = safeString(item.id, SourceFactory.newId());
+    base.name = safeString(item.name, '');
+    base.localUri = safeString(item.localUri, '');
+    base.url = safeString(item.url, '');
+    base.host = safeString(item.host, '');
+    base.port = safeNumber(item.port, SourceFactory.defaultPort(type));
+    base.share = safeString(item.share, '');
+    base.rootPath = safeString(item.rootPath, '');
+    base.domain = safeString(item.domain, '');
+    base.username = safeString(item.username, '');
+    base.password = '';
+    base.secure = safeBool(item.secure, type !== SourceType.FTP);
+    base.builtIn = safeBool(item.builtIn, false);
+    return base;
+  }
+
+  /** 应用私有目录始终可作为本机来源，供智慧屏/PC 无文件选择器时使用（规范 §8.2） */
+  private ensureBuiltin(): void {
+    if (this.sandboxDir.length === 0) {
+      return;
+    }
+    for (const item of this.items) {
+      if (item.id === BUILTIN_LOCAL_ID) {
+        item.localUri = this.sandboxDir;
+        return;
+      }
+    }
+    const builtin: FileSource = SourceFactory.blank(SourceType.LOCAL);
+    builtin.id = BUILTIN_LOCAL_ID;
+    builtin.name = '应用目录';
+    builtin.localUri = this.sandboxDir;
+    builtin.builtIn = true;
+    this.items.unshift(builtin);
+    this.persist();
+  }
+
+  list(): FileSource[] {
+    return this.items.slice();
+  }
+
+  find(id: string): FileSource | null {
+    for (const item of this.items) {
+      if (item.id === id) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  async save(source: FileSource): Promise<FileSource> {
+    const stored: FileSource = SourceFactory.copy(source);
+    const password: string = stored.password;
+    stored.password = '';
+    let replaced: boolean = false;
+    for (let i = 0; i < this.items.length; i++) {
+      if (this.items[i].id === stored.id) {
+        if (this.items[i].builtIn) {
+          stored.builtIn = true;
+        }
+        this.items[i] = stored;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) {
+      if (stored.id.length === 0) {
+        stored.id = SourceFactory.newId();
+      }
+      this.items.push(stored);
+    }
+    if (password.length > 0) {
+      await SecretStore.put(SourceStore.secretAlias(stored.id), password);
+    } else {
+      await SecretStore.remove(SourceStore.secretAlias(stored.id));
+    }
+    this.persist();
+    return stored;
+  }
+
+  async remove(id: string): Promise<void> {
+    const next: FileSource[] = [];
+    for (const item of this.items) {
+      if (item.id !== id) {
+        next.push(item);
+      }
+    }
+    this.items = next;
+    await SecretStore.remove(SourceStore.secretAlias(id));
+    this.persist();
+  }
+
+  async passwordOf(source: FileSource): Promise<string> {
+    if (source.password.length > 0) {
+      return source.password;
+    }
+    return SecretStore.get(SourceStore.secretAlias(source.id));
+  }
+
+  private persist(): void {
+    if (this.prefs === null) {
+      return;
+    }
+    try {
+      this.prefs.putSync(KEY_SOURCES, JSON.stringify(this.items));
+      this.prefs.flush().catch((err: BusinessError) => {
+        Logger.error('SourceStore', '写盘来源失败', err as Error);
+      });
+    } catch (err) {
+      Logger.error('SourceStore', '保存来源失败', err as Error);
+    }
+  }
+
+  private static secretAlias(id: string): string {
+    return `source_password_${id}`;
+  }
+}
