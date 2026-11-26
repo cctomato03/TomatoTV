@@ -11,9 +11,12 @@ import { Symbols } from '../../components/Symbols';
 import { ImageLoader, LoadedImage } from '../../utils/ImageLoader';
 import { Logger } from '../../utils/Logger';
 
-/** 图片预览读取上限与解码尺寸 */
+/** 单张图片读取上限与解码尺寸 */
 const MAX_IMAGE_BYTES: number = 64 * 1024 * 1024;
 const DECODE_MAX_EDGE: number = 2400;
+/** 轮播时预解码的相邻图数量（左右各 1）与像素缓存上限 */
+const PREFETCH_RADIUS: number = 1;
+const PIXEL_CACHE_LIMIT: number = 5;
 
 interface ImageInfo {
   width: number;
@@ -25,7 +28,15 @@ interface ImageInfo {
   link: string;
 }
 
-/** 图片查看器（规范 §7.9）：滑动切换、双指缩放、双击、元数据、作者链接 */
+/**
+ * 图片查看器（规范 §7.9）：滑动切换、双指缩放、双击、元数据、作者链接。
+ *
+ * 切换体验要点：
+ *  - 像素按路径缓存在内存里（LRU 5 张），左右滑动时命中缓存直接显示，不再"图不变"；
+ *  - 未命中时先在当前页显示加载态，加载完成再替换，绝不会错位显示上一张；
+ *  - Swiper 的 index 只作为初始页，之后完全由 onChange 驱动，页码指示器才准确；
+ *  - 预解码左右相邻图，滑动即出图。
+ */
 @Component
 export struct ImageViewerPage {
   stack: NavPathStack = new NavPathStack();
@@ -33,13 +44,15 @@ export struct ImageViewerPage {
 
   @State paths: string[] = [];
   @State index: number = 0;
-  @State pixel: image.PixelMap | null = null;
+  @State initialIndex: number = 0;
+  @State ready: boolean = false;
+  @State loading: boolean = true;
+  @State errorText: string = '';
+  @State cacheTick: number = 0;
   @State zoomScale: number = 1;
   @State offsetX: number = 0;
   @State offsetY: number = 0;
   @State showInfo: boolean = false;
-  @State loading: boolean = true;
-  @State errorText: string = '';
   @State info: ImageInfo = {
     width: 0,
     height: 0,
@@ -51,6 +64,8 @@ export struct ImageViewerPage {
   };
 
   private container: AppContainer = AppContainer.get();
+  private pixelCache: Map<string, image.PixelMap> = new Map<string, image.PixelMap>();
+  private pixelOrder: string[] = [];
   private baseScale: number = 1;
   private baseX: number = 0;
   private baseY: number = 0;
@@ -61,22 +76,57 @@ export struct ImageViewerPage {
   }
 
   aboutToDisappear(): void {
-    ImageLoader.release(this.pixel);
-    this.pixel = null;
+    this.releaseCache();
+  }
+
+  private releaseCache(): void {
+    const pixels: image.PixelMap[] = [];
+    this.pixelCache.forEach((value: image.PixelMap) => {
+      pixels.push(value);
+    });
+    this.pixelCache.clear();
+    this.pixelOrder = [];
+    for (const pixel of pixels) {
+      ImageLoader.release(pixel);
+    }
+  }
+
+  private pixelFor(path: string): image.PixelMap | null {
+    const hit: image.PixelMap | undefined = this.pixelCache.get(path);
+    return hit === undefined ? null : hit;
+  }
+
+  private putPixel(path: string, pixelMap: image.PixelMap): void {
+    this.pixelCache.set(path, pixelMap);
+    this.pixelOrder.push(path);
+    while (this.pixelOrder.length > PIXEL_CACHE_LIMIT) {
+      const evict: string = this.pixelOrder.shift() as string;
+      if (evict === this.paths[this.index]) {
+        this.pixelOrder.push(evict);
+        continue;
+      }
+      const old: image.PixelMap | undefined = this.pixelCache.get(evict);
+      this.pixelCache.delete(evict);
+      if (old !== undefined) {
+        ImageLoader.release(old);
+      }
+    }
+    this.cacheTick++;
   }
 
   private async loadSiblings(): Promise<void> {
     const source: FileSource | null = this.container.findSource(this.param.sourceId);
     if (source === null) {
+      this.ready = true;
       this.loading = false;
       this.errorText = '来源不存在';
       return;
     }
+    let images: string[] = [];
+    let current: number = 0;
     try {
       const parent: string = ImageViewerPage.parentOf(this.param.path);
       const entries: FileEntry[] = await this.container.repository!.list(source, parent);
-      const images: string[] = [];
-      let current: number = 0;
       for (const entry of entries) {
         if (!entry.isDirectory && entry.kind === this.param.kind) {
           if (entry.path === this.param.path) {
@@ -85,18 +135,19 @@ export struct ImageViewerPage {
           images.push(entry.path);
         }
       }
-      if (images.length === 0) {
-        images.push(this.param.path);
-      }
-      this.paths = images;
-      this.index = current;
-      await this.showCurrent();
     } catch (err) {
       Logger.error('ImageViewerPage', '读取同目录图片失败', err as Error);
-      this.paths = [this.param.path];
-      this.index = 0;
-      await this.showCurrent();
     }
+    if (images.length === 0) {
+      images = [this.param.path];
+      current = 0;
+    }
+    this.paths = images;
+    this.index = current;
+    this.initialIndex = current;
+    this.ready = true;
+    await this.showCurrent();
+    this.prefetchNeighbors();
   }
 
   private static parentOf(path: string): string {
@@ -111,73 +162,39 @@ export struct ImageViewerPage {
     return slash >= 0 ? trimmed.substring(slash + 1) : trimmed;
   }
 
-  /**
-   * 加载当前图片：统一"读字节 -> 解码成 PixelMap"，
-   * 这样本机（含 Picker URI）、WebDAV、SMB、FTP 走同一条链路，不依赖 Image 对裸路径的解析。
-   */
+  /** 切换或首次进入时调用：命中缓存即刻显示，否则加载 */
   private async showCurrent(): Promise<void> {
-    const source: FileSource | null = this.container.findSource(this.param.sourceId);
-    if (source === null || this.paths.length === 0) {
-      this.loading = false;
+    if (this.paths.length === 0) {
       return;
     }
-    const token: number = this.loadToken + 1;
-    this.loadToken = token;
     const path: string = this.paths[this.index];
+    this.resetZoom();
+    if (this.pixelFor(path) !== null) {
+      this.loading = false;
+      this.errorText = '';
+      this.updateInfo(path);
+      this.cacheTick++;
+      this.prefetchNeighbors();
+      return;
+    }
     this.loading = true;
     this.errorText = '';
-    this.resetZoom();
+    const token: number = this.loadToken + 1;
+    this.loadToken = token;
     try {
-      const entry: FileEntry = {
-        name: ImageViewerPage.nameOf(path),
-        path: path,
-        isDirectory: false,
-        size: this.param.size,
-        lastModified: 0,
-        mimeType: '',
-        kind: this.param.kind
-      };
-      // 远程来源先落到本地缓存（带完整性校验），再按本地文件解码；本机来源直接用 uri
-      let localTarget: string = path;
-      if (source.type !== SourceType.LOCAL) {
-        localTarget = await this.container.repository!.materializeToPath(source, entry);
-      }
+      const pixelMap: image.PixelMap | null = await this.decode(path);
       if (token !== this.loadToken) {
-        return;
-      }
-      let loaded: LoadedImage = await ImageLoader.fromPath(localTarget, DECODE_MAX_EDGE);
-      if (loaded.pixelMap === null) {
-        // 路径解码失败时退回"读字节再解码"，兼容 Picker URI 等特殊路径
-        const bytes: ArrayBuffer = await this.container.repository!.readDocument(source, entry, MAX_IMAGE_BYTES);
-        if (token !== this.loadToken) {
-          return;
+        if (pixelMap !== null) {
+          ImageLoader.release(pixelMap);
         }
-        if (bytes.byteLength === 0) {
-          this.errorText = '图片内容读取失败，请重试';
-          return;
-        }
-        loaded = await ImageLoader.fromBytes(bytes, DECODE_MAX_EDGE);
-      }
-      if (token !== this.loadToken) {
         return;
       }
-      if (loaded.pixelMap === null) {
-        this.errorText = '这个图片无法解码或格式不受支持';
+      if (pixelMap === null) {
+        this.errorText = '这个图片无法读取或无法解码';
         return;
       }
-      const previous: image.PixelMap | null = this.pixel;
-      this.pixel = loaded.pixelMap;
-      ImageLoader.release(previous);
-      this.info = {
-        width: loaded.width,
-        height: loaded.height,
-        format: ImageViewerPage.extensionOf(path),
-        takenAt: '',
-        author: '',
-        copyright: '',
-        link: ''
-      };
-      this.readExifMetadata(localTarget, path);
+      this.putPixel(path, pixelMap);
+      this.updateInfo(path);
     } catch (err) {
       Logger.error('ImageViewerPage', '加载图片失败', err as Error);
       if (token === this.loadToken) {
@@ -188,13 +205,99 @@ export struct ImageViewerPage {
         this.loading = false;
       }
     }
+    this.prefetchNeighbors();
+  }
+
+  private async decode(path: string): Promise<image.PixelMap | null> {
+    const source: FileSource | null = this.container.findSource(this.param.sourceId);
+    if (source === null) {
+      return null;
+    }
+    const entry: FileEntry = {
+      name: ImageViewerPage.nameOf(path),
+      path: path,
+      isDirectory: false,
+      size: this.param.size,
+      lastModified: 0,
+      mimeType: '',
+      kind: this.param.kind
+    };
+    let localTarget: string = path;
+    if (source.type !== SourceType.LOCAL) {
+      localTarget = await this.container.repository!.materializeToPath(source, entry);
+    }
+    let loaded: LoadedImage = await ImageLoader.fromPath(localTarget, DECODE_MAX_EDGE);
+    if (loaded.pixelMap === null) {
+      const bytes: ArrayBuffer = await this.container.repository!.readDocument(source, entry, MAX_IMAGE_BYTES);
+      if (bytes.byteLength === 0) {
+        return null;
+      }
+      loaded = await ImageLoader.fromBytes(bytes, DECODE_MAX_EDGE);
+    }
+    return loaded.pixelMap;
+  }
+
+  private prefetchNeighbors(): void {
+    for (let delta = 1; delta <= PREFETCH_RADIUS; delta++) {
+      for (const target of [this.index - delta, this.index + delta]) {
+        if (target < 0 || target >= this.paths.length) {
+          continue;
+        }
+        const path: string = this.paths[target];
+        if (this.pixelFor(path) !== null) {
+          continue;
+        }
+        this.decode(path).then((pixelMap: image.PixelMap | null) => {
+          if (pixelMap === null) {
+            return;
+          }
+          if (this.pixelFor(path) !== null) {
+            ImageLoader.release(pixelMap);
+            return;
+          }
+          this.putPixel(path, pixelMap);
+        }).catch((err: Error) => {
+          Logger.warn('ImageViewerPage', '预加载相邻图片失败');
+        });
+      }
+    }
+  }
+
+  private updateInfo(path: string): void {
+    // 切图时先重置元数据，再用 PixelMap 尺寸 + EXIF 补齐，避免残留上一张的信息
+    this.info = {
+      width: 0,
+      height: 0,
+      format: ImageViewerPage.extensionOf(path),
+      takenAt: '',
+      author: '',
+      copyright: '',
+      link: ''
+    };
+    const pixelMap: image.PixelMap | null = this.pixelFor(path);
+    if (pixelMap !== null) {
+      pixelMap.getImageInfo().then((pixelInfo: image.ImageInfo) => {
+        this.info = {
+          width: pixelInfo.size.width,
+          height: pixelInfo.size.height,
+          format: ImageViewerPage.extensionOf(path),
+          takenAt: this.info.takenAt,
+          author: this.info.author,
+          copyright: this.info.copyright,
+          link: this.info.link
+        };
+      }).catch((err: Error) => {
+        Logger.warn('ImageViewerPage', '读取图片尺寸失败');
+      });
+    }
+    this.readExifMetadata(path);
   }
 
   /** EXIF 元数据（作者 / 拍摄时间 / 版权 / 作者链接） */
-  private readExifMetadata(localPath: string, path: string): void {
+  private readExifMetadata(path: string): void {
     let source: image.ImageSource | null = null;
     try {
-      source = image.createImageSource(localPath);
+      source = image.createImageSource(path);
       const pending: image.ImageSource = source;
       const properties: Promise<string>[] = [
         pending.getImageProperty(image.PropertyKey.DATE_TIME_ORIGINAL),
@@ -205,7 +308,7 @@ export struct ImageViewerPage {
         const info: ImageInfo = {
           width: this.info.width,
           height: this.info.height,
-          format: ImageViewerPage.extensionOf(path),
+          format: this.info.format,
           takenAt: values[0] === undefined ? '' : values[0],
           author: values[1] === undefined ? '' : values[1],
           copyright: values[2] === undefined ? '' : values[2],
@@ -262,89 +365,105 @@ export struct ImageViewerPage {
   build() {
     NavDestination() {
       Stack({ alignContent: Alignment.TopStart }) {
-        Swiper() {
-          ForEach(this.paths, (item: string, itemIndex: number) => {
-            Stack({ alignContent: Alignment.Center }) {
-              if (itemIndex === this.index && this.pixel !== null) {
-                Image(this.pixel)
-                  .objectFit(ImageFit.Contain)
-                  .width('100%')
-                  .height('100%')
-                  .scale({ x: this.zoomScale, y: this.zoomScale })
-                  .translate({ x: this.offsetX, y: this.offsetY })
-              } else if (itemIndex === this.index && this.loading) {
-                LoadingProgress()
-                  .width(48)
-                  .height(48)
-                  .color(Color.White)
-              } else if (itemIndex === this.index && this.errorText.length > 0) {
-                Column({ space: 12 }) {
-                  Text(this.errorText)
-                    .fontSize(14)
-                    .fontColor(Color.White)
-                    .textAlign(TextAlign.Center)
-                    .padding({ left: 32, right: 32 })
-                  Button('重试')
-                    .type(ButtonType.Capsule)
-                    .height(38)
-                    .backgroundColor($r('app.color.brand'))
-                    .fontColor(Color.White)
-                    .onClick(() => {
-                      this.showCurrent();
+        if (this.ready) {
+          Swiper() {
+            ForEach(this.paths, (item: string, itemIndex: number) => {
+              Stack({ alignContent: Alignment.Center }) {
+                if (this.pixelFor(item) !== null) {
+                  Image(this.pixelFor(item))
+                    .objectFit(ImageFit.Contain)
+                    .width('100%')
+                    .height('100%')
+                    .scale({
+                      x: itemIndex === this.index ? this.zoomScale : 1,
+                      y: itemIndex === this.index ? this.zoomScale : 1
                     })
+                    .translate({
+                      x: itemIndex === this.index ? this.offsetX : 0,
+                      y: itemIndex === this.index ? this.offsetY : 0
+                    })
+                } else if (itemIndex === this.index && this.errorText.length > 0) {
+                  Column({ space: 12 }) {
+                    Text(this.errorText)
+                      .fontSize(14)
+                      .fontColor(Color.White)
+                      .textAlign(TextAlign.Center)
+                      .padding({ left: 32, right: 32 })
+                    Button('重试')
+                      .type(ButtonType.Capsule)
+                      .height(38)
+                      .backgroundColor($r('app.color.brand'))
+                      .fontColor(Color.White)
+                      .onClick(() => {
+                        this.showCurrent();
+                      })
+                  }
+                } else if (itemIndex === this.index) {
+                  LoadingProgress()
+                    .width(48)
+                    .height(48)
+                    .color(Color.White)
                 }
               }
+              .width('100%')
+              .height('100%')
+            }, (item: string, itemIndex: number) => `${item}_${itemIndex}`)
+          }
+          .index(this.initialIndex)
+          .indicator(this.paths.length > 1)
+          .loop(false)
+          .disableSwipe(this.zoomScale > 1.01)
+          .width('100%')
+          .height('100%')
+          .onChange((newIndex: number) => {
+            if (newIndex === this.index) {
+              return;
             }
-            .width('100%')
-            .height('100%')
-          }, (item: string, itemIndex: number) => `${item}_${itemIndex}`)
-        }
-        .index(this.index)
-        .indicator(this.paths.length > 1)
-        .loop(false)
-        .disableSwipe(this.zoomScale > 1.01)
-        .width('100%')
-        .height('100%')
-        .onChange((newIndex: number) => {
-          this.index = newIndex;
-          this.showCurrent();
-        })
-        .gesture(
-          GestureGroup(GestureMode.Parallel,
-            PinchGesture({ fingers: 2 })
-              .onActionUpdate((event: GestureEvent) => {
-                const next: number = this.baseScale * event.scale;
-                this.zoomScale = next < 1 ? 1 : (next > 5 ? 5 : next);
-              })
-              .onActionEnd(() => {
-                if (this.zoomScale <= 1.01) {
-                  this.resetZoom();
-                } else {
-                  this.baseScale = this.zoomScale;
-                }
-              }),
-            PanGesture()
-              .onActionUpdate((event: GestureEvent) => {
-                if (this.zoomScale > 1.01) {
-                  this.offsetX = this.baseX + event.offsetX;
-                  this.offsetY = this.baseY + event.offsetY;
-                }
-              })
-              .onActionEnd(() => {
-                this.baseX = this.offsetX;
-                this.baseY = this.offsetY;
-              }),
-            TapGesture({ count: 2 })
-              .onAction(() => {
-                if (this.zoomScale > 1.01) {
-                  this.resetZoom();
-                } else {
-                  this.zoomScale = 2.5;
-                  this.baseScale = 2.5;
-                }
-              })
+            this.index = newIndex;
+            this.showCurrent();
+          })
+          .gesture(
+            GestureGroup(GestureMode.Parallel,
+              PinchGesture({ fingers: 2 })
+                .onActionUpdate((event: GestureEvent) => {
+                  const next: number = this.baseScale * event.scale;
+                  this.zoomScale = next < 1 ? 1 : (next > 5 ? 5 : next);
+                })
+                .onActionEnd(() => {
+                  if (this.zoomScale <= 1.01) {
+                    this.resetZoom();
+                  } else {
+                    this.baseScale = this.zoomScale;
+                  }
+                }),
+              PanGesture()
+                .onActionUpdate((event: GestureEvent) => {
+                  if (this.zoomScale > 1.01) {
+                    this.offsetX = this.baseX + event.offsetX;
+                    this.offsetY = this.baseY + event.offsetY;
+                  }
+                })
+                .onActionEnd(() => {
+                  this.baseX = this.offsetX;
+                  this.baseY = this.offsetY;
+                }),
+              TapGesture({ count: 2 })
+                .onAction(() => {
+                  if (this.zoomScale > 1.01) {
+                    this.resetZoom();
+                  } else {
+                    this.zoomScale = 2.5;
+                    this.baseScale = 2.5;
+                  }
+                })
+            )
           )
-        )
+        } else {
+          LoadingProgress()
+            .width(48)
+            .height(48)
+            .color(Color.White)
+        }
 
         Row({ space: 8 }) {
           Button({ type: ButtonType.Circle }) {
@@ -360,7 +479,7 @@ export struct ImageViewerPage {
           Blank()
 
           if (this.paths.length > 1) {
-            Text(`${this.index + 1} / ${this.paths.length}`)
+            Text(`${Math.min(this.index + 1, this.paths.length)} / ${this.paths.length}`)
               .fontSize(12)
               .fontColor(Color.White)
               .padding({ left: 10, right: 10, top: 4, bottom: 4 })

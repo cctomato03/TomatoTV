@@ -2,7 +2,8 @@ import { promptAction } from '@kit.ArkUI';
 import { AppContainer } from '../../app/AppContainer';
 import { FileEntry, FileEntryFactory, FileSorter, SortMode } from '../../model/FileEntry';
 import { PreviewKind } from '../../model/FileKinds';
-import { FileSource, SourceType } from '../../model/FileSource';
+import { FileSource, SourceFactory, SourceType } from '../../model/FileSource';
+import { ThumbnailService } from '../../utils/ThumbnailService';
 import { SettingsValidation, ViewMode } from '../../model/AppSettings';
 import { FsError, FsErrorKind, FsErrorText } from '../../data/fs/FileSystemClient';
 import { Breakpoint, Layout } from '../../utils/Breakpoint';
@@ -47,6 +48,7 @@ export struct BrowsePage {
   @State tvMode: boolean = false;
 
   private container: AppContainer = AppContainer.get();
+  private sourceRef: FileSource = SourceFactory.blank(SourceType.LOCAL);
   private scroller: Scroller = new Scroller();
   private snapshots: Snap[] = [];
   private firstVisible: number = 0;
@@ -57,6 +59,9 @@ export struct BrowsePage {
   aboutToAppear(): void {
     this.applySettings();
     const source: FileSource | null = this.container.findSource(this.param.sourceId);
+    if (source !== null) {
+      this.sourceRef = source;
+    }
     const rootPath: string = source === null ? '' : BrowsePage.rootPathOf(source);
     this.currentPath = this.param.path.length > 0 ? this.param.path : rootPath;
     this.trail = [{ name: source === null ? this.param.title : source.name, path: rootPath }];
@@ -67,6 +72,7 @@ export struct BrowsePage {
   aboutToDisappear(): void {
     EventBus.off(BusKeys.SETTINGS_CHANGED, this.onSettingsChanged);
     this.snapshots = [];
+    ThumbnailService.get().clear();
   }
 
   private static rootPathOf(source: FileSource): string {
@@ -487,6 +493,7 @@ export struct BrowsePage {
           ListItem() {
             FileRow({
               entry: item,
+              source: this.sourceRef,
               tvMode: Layout.focusDriven(this.breakpoint, this.tvMode),
               autoFocus: index === 0
             })
@@ -515,6 +522,7 @@ export struct BrowsePage {
         GridItem() {
           FileTile({
             entry: item,
+            source: this.sourceRef,
             tvMode: Layout.focusDriven(this.breakpoint, this.tvMode),
             autoFocus: index === 0
           })

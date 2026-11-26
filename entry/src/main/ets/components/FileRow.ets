@@ -1,21 +1,59 @@
+import { image } from '@kit.ImageKit';
 import { FileEntry, FileEntryFactory } from '../model/FileEntry';
+import { FileSource, SourceFactory, SourceType } from '../model/FileSource';
+import { PreviewKind } from '../model/FileKinds';
 import { Fmt } from '../utils/Format';
 import { Symbols } from './Symbols';
+import { ThumbnailService } from '../utils/ThumbnailService';
 
-/** 列表行（规范 §7.3）：图标 / 名称 / 大小 / 修改时间 */
+/** 列表行（规范 §7.3）：缩略图/图标 + 名称 + 大小 + 修改时间 */
 @Component
 export struct FileRow {
   entry: FileEntry = FileEntryFactory.empty();
+  source: FileSource = SourceFactory.blank(SourceType.LOCAL);
   tvMode: boolean = false;
   autoFocus: boolean = false;
   @State focused: boolean = false;
+  @State thumb: image.PixelMap | null = null;
+
+  aboutToAppear(): void {
+    this.loadThumbnail();
+  }
+
+  private loadThumbnail(): void {
+    if (this.entry.isDirectory || this.entry.kind !== PreviewKind.IMAGE) {
+      return;
+    }
+    const service: ThumbnailService = ThumbnailService.get();
+    const cached: image.PixelMap | null = service.cached(this.source.id, this.entry.path);
+    if (cached !== null) {
+      this.thumb = cached;
+      return;
+    }
+    service.request(this.source, this.entry, (pixelMap: image.PixelMap) => {
+      this.thumb = pixelMap;
+    });
+  }
 
   build() {
     Row({ space: 12 }) {
-      SymbolGlyph(this.entry.isDirectory ? Symbols.folder() : Symbols.forKind(this.entry.kind))
-        .fontSize(22)
-        .fontColor([this.entry.isDirectory ? $r('app.color.brand') : $r('app.color.text_secondary')])
-        .width(32)
+      if (this.thumb !== null) {
+        Image(this.thumb)
+          .width(36)
+          .height(36)
+          .borderRadius(8)
+          .objectFit(ImageFit.Cover)
+          .backgroundColor($r('app.color.brand_soft'))
+      } else {
+        Column() {
+          SymbolGlyph(this.entry.isDirectory ? Symbols.folder() : Symbols.forKind(this.entry.kind))
+            .fontSize(22)
+            .fontColor([this.entry.isDirectory ? $r('app.color.brand') : $r('app.color.text_secondary')])
+        }
+        .width(36)
+        .height(36)
+        .justifyContent(FlexAlign.Center)
+      }
 
       Column({ space: 2 }) {
         Text(this.entry.name)
@@ -56,26 +94,55 @@ export struct FileRow {
   }
 }
 
-/** 网格单元（规范 §7.3） */
+/** 网格单元（规范 §7.3）：缩略图铺满上部，名称在下 */
 @Component
 export struct FileTile {
   entry: FileEntry = FileEntryFactory.empty();
+  source: FileSource = SourceFactory.blank(SourceType.LOCAL);
   tvMode: boolean = false;
   autoFocus: boolean = false;
   @State focused: boolean = false;
+  @State thumb: image.PixelMap | null = null;
+
+  aboutToAppear(): void {
+    this.loadThumbnail();
+  }
+
+  private loadThumbnail(): void {
+    if (this.entry.isDirectory || this.entry.kind !== PreviewKind.IMAGE) {
+      return;
+    }
+    const service: ThumbnailService = ThumbnailService.get();
+    const cached: image.PixelMap | null = service.cached(this.source.id, this.entry.path);
+    if (cached !== null) {
+      this.thumb = cached;
+      return;
+    }
+    service.request(this.source, this.entry, (pixelMap: image.PixelMap) => {
+      this.thumb = pixelMap;
+    });
+  }
 
   build() {
     Column({ space: 8 }) {
-      Column() {
-        SymbolGlyph(this.entry.isDirectory ? Symbols.folder() : Symbols.forKind(this.entry.kind))
-          .fontSize(32)
-          .fontColor([this.entry.isDirectory ? $r('app.color.brand') : $r('app.color.text_secondary')])
+      Stack({ alignContent: Alignment.Center }) {
+        if (this.thumb !== null) {
+          Image(this.thumb)
+            .width('100%')
+            .height('100%')
+            .objectFit(ImageFit.Cover)
+            .borderRadius($r('app.float.radius_small'))
+        } else {
+          SymbolGlyph(this.entry.isDirectory ? Symbols.folder() : Symbols.forKind(this.entry.kind))
+            .fontSize(32)
+            .fontColor([this.entry.isDirectory ? $r('app.color.brand') : $r('app.color.text_secondary')])
+        }
       }
       .width('100%')
-      .height(72)
+      .height(84)
       .borderRadius($r('app.float.radius_small'))
       .backgroundColor($r('app.color.brand_soft'))
-      .justifyContent(FlexAlign.Center)
+      .clip(true)
 
       Text(this.entry.name)
         .fontSize(13)
