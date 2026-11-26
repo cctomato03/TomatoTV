@@ -1,0 +1,60 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#1C1512"
+    },
+    {
+      "name": "brand",
+      "value": "#FF6A55"
+    },
+    {
+      "name": "brand_pressed",
+      "value": "#E54835"
+    },
+    {
+      "name": "brand_soft",
+      "value": "#3A2320"
+    },
+    {
+      "name": "surface",
+      "value": "#1C1512"
+    },
+    {
+      "name": "surface_card",
+      "value": "#251C18"
+    },
+    {
+      "name": "surface_dark",
+      "value": "#120D0B"
+    },
+    {
+      "name": "text_primary",
+      "value": "#F6EDE9"
+    },
+    {
+      "name": "text_secondary",
+      "value": "#B9A79F"
+    },
+    {
+      "name": "text_tertiary",
+      "value": "#8C7A72"
+    },
+    {
+      "name": "divider",
+      "value": "#33241F"
+    },
+    {
+      "name": "focus_stroke",
+      "value": "#FF6A55"
+    },
+    {
+      "name": "player_backdrop",
+      "value": "#0A0706"
+    },
+    {
+      "name": "player_scrim",
+      "value": "#B3000000"
+    }
+  ]
+}

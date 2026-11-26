@@ -1,0 +1,48 @@
+{
+  "float": [
+    {
+      "name": "radius_small",
+      "value": "12vp"
+    },
+    {
+      "name": "radius_card",
+      "value": "20vp"
+    },
+    {
+      "name": "radius_sheet",
+      "value": "24vp"
+    },
+    {
+      "name": "space_xs",
+      "value": "4vp"
+    },
+    {
+      "name": "space_s",
+      "value": "8vp"
+    },
+    {
+      "name": "space_m",
+      "value": "12vp"
+    },
+    {
+      "name": "space_l",
+      "value": "16vp"
+    },
+    {
+      "name": "space_xl",
+      "value": "24vp"
+    },
+    {
+      "name": "space_xxl",
+      "value": "32vp"
+    },
+    {
+      "name": "touch_min",
+      "value": "48vp"
+    },
+    {
+      "name": "page_margin",
+      "value": "16vp"
+    }
+  ]
+}

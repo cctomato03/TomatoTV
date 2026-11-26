@@ -1,0 +1,11 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "tomato_tv",
+  "version": "1.0.0",
+  "description": "TomatoTV - HarmonyOS NEXT local & remote file manager with media playback",
+  "main": "",
+  "author": "cctomato",
+  "license": "Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {}
+}

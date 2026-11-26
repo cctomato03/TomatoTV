@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "TomatoTV 主模块"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "TomatoTV 本地与网络文件管理器"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "TomatoTV"
+    }
+  ]
+}
