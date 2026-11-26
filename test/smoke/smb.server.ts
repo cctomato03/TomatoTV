@@ -381,6 +381,13 @@ export class Smb2TestServer {
     if (body.readUInt16LE(0) !== 57) {
       this.fail(`CREATE 请求 StructureSize != 57 (${body.readUInt16LE(0)})`);
     }
+    // StructureSize 语义是"固定 56 字节 + 至少 1 字节 Buffer"：
+    // 打开共享根时名字为空，请求体若只有 56 字节，Samba/Windows 会直接返回
+    // STATUS_INVALID_PARAMETER。这里对齐真实服务端行为。
+    if (body.length < 57) {
+      this.fail(`CREATE 请求体只有 ${body.length} 字节，真实服务端要求 >= 57`);
+      return this.simpleResponse(header, 0xc000000d, u16(9));
+    }
     const nameOffset = body.readUInt16LE(44);
     const nameLength = body.readUInt16LE(46);
     const start = nameOffset - 64;
@@ -477,6 +484,10 @@ export class Smb2TestServer {
   private onQueryInfo(header: HeaderInfo, body: Buffer): Buffer {
     if (body.readUInt16LE(0) !== 41) {
       this.fail(`QUERY_INFO 请求 StructureSize != 41 (${body.readUInt16LE(0)})`);
+    }
+    if (body.length < 41) {
+      this.fail(`QUERY_INFO 请求体只有 ${body.length} 字节，真实服务端要求 >= 41`);
+      return this.simpleResponse(header, 0xc000000d, u16(9));
     }
     const infoClass = body.readUInt8(3);
     if (infoClass !== 18) {
