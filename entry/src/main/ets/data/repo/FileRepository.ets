@@ -47,8 +47,13 @@ export class FileRepository {
         client = new FtpFileSystem(source.host, source.port, source.username, password, source.rootPath, source.secure);
         break;
       }
+      case SourceType.SMB: {
+        const password: string = await this.resolver.passwordOf(source);
+        client = new SmbFileSystem(source, password);
+        break;
+      }
       default:
-        client = new SmbFileSystem();
+        client = new SmbFileSystem(source, '');
         break;
     }
     this.clients.set(source.id, client);

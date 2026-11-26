@@ -358,16 +358,29 @@ export struct SourceEditPage {
             this.field('根路径', '可留空', this.rootPath, (value: string) => {
               this.rootPath = value;
             }, '', false)
-            Row() {
-              Text('使用 FTPS（显式 TLS）')
-                .fontSize(14)
-                .fontColor($r('app.color.text_primary'))
-                .layoutWeight(1)
-              Toggle({ type: ToggleType.Switch, isOn: this.secure })
-                .selectedColor($r('app.color.brand'))
-                .onChange((isOn: boolean) => {
-                  this.secure = isOn;
-                })
+            Column({ space: 4 }) {
+              Row() {
+                Text('使用 FTPS（隐式 TLS）')
+                  .fontSize(14)
+                  .fontColor($r('app.color.text_primary'))
+                  .layoutWeight(1)
+                Toggle({ type: ToggleType.Switch, isOn: this.secure })
+                  .selectedColor($r('app.color.brand'))
+                  .onChange((isOn: boolean) => {
+                    this.secure = isOn;
+                    const current: number = Number(this.portText);
+                    if (isOn && (current === 21 || this.portText.length === 0)) {
+                      this.portText = '990';
+                    } else if (!isOn && current === 990) {
+                      this.portText = '21';
+                    }
+                  })
+              }
+              .width('100%')
+              Text('隐式 FTPS 直接以 TLS 建连（默认端口 990）。若服务器只支持显式 FTPS（AUTH TLS / 21 端口），当前版本会提示暂不支持。')
+                .fontSize(11)
+                .fontColor($r('app.color.text_secondary'))
+                .width('100%')
             }
             .width('100%')
           }
@@ -406,13 +419,6 @@ export struct SourceEditPage {
             this.field('密码', '可留空', this.password, (value: string) => {
               this.password = value;
             }, '', true)
-          }
-
-          if (this.type === SourceType.SMB) {
-            Text('当前版本暂不支持 SMB：需要 libsmb2 的 NAPI 封装，将在后续版本提供')
-              .fontSize(12)
-              .fontColor($r('app.color.brand'))
-              .width('100%')
           }
 
           if (this.isTvLayout && this.param.isNew) {

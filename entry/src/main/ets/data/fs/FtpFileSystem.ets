@@ -45,9 +45,93 @@ class ByteSink implements InputStreamLike {
   }
 }
 
-/** 极简 FTP 客户端：基于 @kit.NetworkKit TCPSocket，支持 PASV / USER / PASS / MLSD / LIST / SIZE / MDTM / REST / RETR */
+/** FTP 控制/数据通道抽象：明文走 TCPSocket，隐式 FTPS 走 TLSSocket */
+interface FtpChannel {
+  send(data: string | ArrayBuffer): Promise<void>;
+  close(): Promise<void>;
+  onMessage(callback: (message: ArrayBuffer) => void): void;
+  onClose(callback: () => void): void;
+}
+
+class TcpChannel implements FtpChannel {
+  private socketInstance: socket.TCPSocket;
+
+  constructor(instance: socket.TCPSocket) {
+    this.socketInstance = instance;
+  }
+
+  async send(data: string | ArrayBuffer): Promise<void> {
+    await this.socketInstance.send({ data: data });
+  }
+
+  async close(): Promise<void> {
+    await this.socketInstance.close();
+  }
+
+  onMessage(callback: (message: ArrayBuffer) => void): void {
+    this.socketInstance.on('message', (info: socket.SocketMessageInfo) => {
+      callback(info.message);
+    });
+  }
+
+  onClose(callback: () => void): void {
+    this.socketInstance.on('close', () => {
+      callback();
+    });
+  }
+}
+
+class TlsChannel implements FtpChannel {
+  private socketInstance: socket.TLSSocket;
+
+  constructor(instance: socket.TLSSocket) {
+    this.socketInstance = instance;
+  }
+
+  async send(data: string | ArrayBuffer): Promise<void> {
+    await this.socketInstance.send(data);
+  }
+
+  async close(): Promise<void> {
+    await this.socketInstance.close();
+  }
+
+  onMessage(callback: (message: ArrayBuffer) => void): void {
+    this.socketInstance.on('message', (info: socket.SocketMessageInfo) => {
+      callback(info.message);
+    });
+  }
+
+  onClose(callback: () => void): void {
+    this.socketInstance.on('close', () => {
+      callback();
+    });
+  }
+}
+
+async function openChannel(host: string, port: number, secure: boolean): Promise<FtpChannel> {
+  const address: socket.NetAddress = { address: host, port: port, family: 1 };
+  if (secure) {
+    const tls: socket.TLSSocket = socket.constructTLSSocketInstance();
+    const secureOptions: socket.TLSSecureOptions = { protocols: socket.Protocol.TLSv12 };
+    const options: socket.TLSConnectOptions = {
+      address: address,
+      secureOptions: secureOptions,
+      timeout: 15000
+    };
+    await tls.connect(options);
+    return new TlsChannel(tls);
+  }
+  const tcp: socket.TCPSocket = socket.constructTCPSocketInstance();
+  const tcpOptions: socket.TCPConnectOptions = { address: address, timeout: 15000 };
+  await tcp.connect(tcpOptions);
+  return new TcpChannel(tcp);
+}
+
+/** 极简 FTP 客户端：支持 PASV / USER / PASS / MLSD / LIST / SIZE / MDTM / REST / RETR，支持隐式 FTPS */
 class FtpClient {
-  private control: socket.TCPSocket | null = null;
+  private control: FtpChannel | null = null;
+  private secure: boolean = false;
   private raw: string = '';
   private multiCode: string = '';
   private multiText: string = '';
@@ -56,21 +140,22 @@ class FtpClient {
   private decoder: util.TextDecoder = util.TextDecoder.create('utf-8');
   private joined: boolean = false;
 
-  async connect(host: string, port: number): Promise<void> {
-    const control: socket.TCPSocket = socket.constructTCPSocketInstance();
+  async connect(host: string, port: number, secure: boolean): Promise<void> {
+    this.secure = secure;
+    const control: FtpChannel = await openChannel(host, port, secure);
     this.control = control;
-    control.on('message', (info: socket.SocketMessageInfo) => {
-      this.feed(this.decoder.decodeWithStream(new Uint8Array(info.message)));
+    control.onMessage((message: ArrayBuffer) => {
+      this.feed(this.decoder.decodeWithStream(new Uint8Array(message)));
     });
-    control.on('close', () => {
+    control.onClose(() => {
       this.flushWaiters();
-    });
-    await control.connect({
-      address: { address: host, port: port, family: 1 },
-      timeout: 15000
     });
     const banner: FtpReply = await this.read();
     if (banner.code !== 220) {
+      if (secure) {
+        throw new FsError(FsErrorKind.UNSUPPORTED,
+          '服务器未在 TLS 上返回 FTP 欢迎信息，可能只支持显式 FTPS（AUTH TLS），当前版本暂不支持');
+      }
       throw new FsError(FsErrorKind.NETWORK, `ftp banner ${banner.code}`);
     }
   }
@@ -142,7 +227,7 @@ class FtpClient {
     if (this.control === null) {
       throw new FsError(FsErrorKind.NETWORK, 'control socket closed');
     }
-    await this.control.send({ data: `${line}\r\n` });
+    await this.control.send(`${line}\r\n`);
   }
 
   async command(line: string): Promise<FtpReply> {
@@ -168,7 +253,7 @@ class FtpClient {
   }
 
   /** 打开被动模式数据连接 */
-  private async openPassive(): Promise<socket.TCPSocket> {
+  private async openPassive(): Promise<FtpChannel> {
     const reply: FtpReply = await this.command('PASV');
     if (reply.code !== 227) {
       throw new FsError(FsErrorKind.NETWORK, `PASV ${reply.code}`);
@@ -179,13 +264,11 @@ class FtpClient {
     }
     const host: string = `${numbers[1]}.${numbers[2]}.${numbers[3]}.${numbers[4]}`;
     const port: number = Number(numbers[5]) * 256 + Number(numbers[6]);
-    const data: socket.TCPSocket = socket.constructTCPSocketInstance();
-    await data.connect({ address: { address: host, port: port, family: 1 }, timeout: 15000 });
-    return data;
+    return openChannel(host, port, this.secure);
   }
 
   /** 拉取一次数据传输的完整内容 */
-  private async fetch(passive: socket.TCPSocket): Promise<ArrayBuffer> {
+  private async fetch(passive: FtpChannel): Promise<ArrayBuffer> {
     const chunks: ArrayBuffer[] = [];
     let received: number = 0;
     let done: boolean = false;
@@ -193,11 +276,11 @@ class FtpClient {
     const completion: Promise<void> = new Promise<void>((resolve: () => void) => {
       resolver = resolve;
     });
-    passive.on('message', (info: socket.SocketMessageInfo) => {
-      chunks.push(info.message);
-      received += info.message.byteLength;
+    passive.onMessage((message: ArrayBuffer) => {
+      chunks.push(message);
+      received += message.byteLength;
     });
-    passive.on('close', () => {
+    passive.onClose(() => {
       if (!done) {
         done = true;
         if (resolver !== null) {
@@ -217,7 +300,7 @@ class FtpClient {
   }
 
   async listRaw(path: string): Promise<string> {
-    const passive: socket.TCPSocket = await this.openPassive();
+    const passive: FtpChannel = await this.openPassive();
     const reply: FtpReply = await this.command(`MLSD ${path}`);
     if (reply.code !== 150 && reply.code !== 125) {
       await passive.close();
@@ -230,7 +313,7 @@ class FtpClient {
   }
 
   async listFallback(path: string): Promise<string> {
-    const passive: socket.TCPSocket = await this.openPassive();
+    const passive: FtpChannel = await this.openPassive();
     const reply: FtpReply = await this.command(`LIST ${path}`);
     if (reply.code !== 150 && reply.code !== 125) {
       await passive.close();
@@ -243,7 +326,7 @@ class FtpClient {
   }
 
   async retrieve(path: string, position: number, length: number): Promise<ArrayBuffer> {
-    const passive: socket.TCPSocket = await this.openPassive();
+    const passive: FtpChannel = await this.openPassive();
     if (position > 0) {
       const restReply: FtpReply = await this.command(`REST ${position}`);
       if (restReply.code !== 350) {
@@ -269,14 +352,14 @@ class FtpClient {
         fn();
       }
     };
-    passive.on('message', (info: socket.SocketMessageInfo) => {
-      chunks.push(info.message);
-      received += info.message.byteLength;
+    passive.onMessage((message: ArrayBuffer) => {
+      chunks.push(message);
+      received += message.byteLength;
       if (received >= length) {
         finish();
       }
     });
-    passive.on('close', () => {
+    passive.onClose(() => {
       finish();
     });
     await completion;
@@ -359,10 +442,11 @@ class FtpClient {
 }
 
 /**
- * FTP 来源（规范 §8.5）。
- * 已实现：PASV、USER/PASS、MLSD（回退 LIST）、SIZE、MDTM、REST+RETR 随机读。
- * 未实现：FTPS（显式 TLS）。当前 SDK 的 TLS Socket 不支持在已连接的明文 socket 上做 STARTTLS，
- * 因此 FTPS 会返回明确的不支持提示，而不是静默失败（见 docs/DEVIATIONS.md）。
+ * FTP / FTPS 来源（规范 §8.5）。
+ * 已实现：PASV、USER/PASS、MLSD（回退 LIST）、SIZE、MDTM、REST+RETR 随机读；
+ * 隐式 FTPS（Implicit TLS，默认端口 990）通过 TLSSocket 建立控制与数据通道。
+ * 未实现：显式 FTPS（AUTH TLS / STARTTLS）——当前 SDK 无法在已连接的明文 socket 上升级 TLS，
+ * 若服务器只支持显式 FTPS 会返回明确提示而不是静默失败（见 docs/DEVIATIONS.md）。
  */
 export class FtpFileSystem implements FileSystemClient {
   private host: string;
@@ -370,17 +454,16 @@ export class FtpFileSystem implements FileSystemClient {
   private username: string;
   private password: string;
   private rootPath: string;
+  private secure: boolean;
   private client: FtpClient | null = null;
 
   constructor(host: string, port: number, username: string, password: string, rootPath: string, secure: boolean) {
     this.host = host;
-    this.port = port > 0 ? port : 21;
+    this.secure = secure;
+    this.port = port > 0 ? port : (secure ? 990 : 21);
     this.username = username;
     this.password = password;
     this.rootPath = SourceUrl.trimSlashes(rootPath);
-    if (secure) {
-      throw new FsError(FsErrorKind.UNSUPPORTED, 'FTPS not supported yet');
-    }
   }
 
   private async ensure(): Promise<FtpClient> {
@@ -389,7 +472,7 @@ export class FtpFileSystem implements FileSystemClient {
     }
     const client: FtpClient = new FtpClient();
     try {
-      await client.connect(this.host, this.port);
+      await client.connect(this.host, this.port, this.secure);
       await client.login(this.username, this.password);
       await client.command('TYPE I');
     } catch (err) {

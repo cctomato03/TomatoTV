@@ -37,6 +37,9 @@ jobs:
       - name: 运行单元测试
         run: node scripts/test/run-unit.mjs
 
+      - name: 文档预览页集成测试（Chrome 无头）
+        run: node scripts/test/run-viewer.mjs
+
   build-hap:
     name: 编译 HarmonyOS HAP
     runs-on: ubuntu-latest

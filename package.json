@@ -1,16 +1,19 @@
 {
   "name": "tomato-tv",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "TomatoTV - HarmonyOS NEXT file manager and media player (repo toolchain)",
   "license": "Apache-2.0",
   "scripts": {
     "test": "node scripts/test/run-unit.mjs",
     "ci:prepare": "node scripts/ci/prepare-openharmony.mjs",
-    "ci:restore": "node scripts/ci/prepare-openharmony.mjs --restore"
+    "ci:restore": "node scripts/ci/prepare-openharmony.mjs --restore",
+    "test:viewer": "node scripts/test/run-viewer.mjs",
+    "test:smb": "node scripts/test/run-smb-smoke.mjs"
   },
   "devDependencies": {
     "esbuild": "0.24.0",
-    "jsqr": "1.4.0"
+    "jsqr": "1.4.0",
+    "puppeteer-core": "23.11.1"
   }
 }
