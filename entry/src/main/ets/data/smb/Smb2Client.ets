@@ -357,6 +357,21 @@ export class Smb2Client {
     return Smb2Codec.parseCreate(response.raw);
   }
 
+  /** 仅供诊断/测试：把现成的 SMB2 报文发出去并返回响应头（不做状态校验） */
+  async sendRaw(packet: Uint8Array): Promise<Smb2Header> {
+    return this.request(packet);
+  }
+
+  /** 仅供诊断/测试：取一个 messageId（服务端用 credit 窗口校验，必须顺序递增） */
+  debugAllocMessageId(): number {
+    return this.allocMessageId();
+  }
+
+  /** 当前会话/树（诊断用） */
+  sessionAndTree(): string {
+    return `session=${this.sessionId} tree=${this.treeId} dialect=0x${this.dialect.toString(16)}`;
+  }
+
   private async closeHandle(fileId: Smb2FileId): Promise<void> {
     try {
       await this.request(Smb2Codec.buildClose(this.allocMessageId(), this.sessionId, this.treeId, fileId));

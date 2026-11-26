@@ -276,8 +276,14 @@ export class Smb2Codec {
       Smb2Codec.u32(0), // CreateContextsLength
       nameBytes
     );
+    // 关键：StructureSize=57 表示"固定 56 字节 + 至少 1 字节 Buffer"。
+    // 打开共享根时名字为空，若只发 56 字节，Samba / Windows 会在
+    // smbd_smb2_request_verify_sizes(0x39) 处判为 STATUS_INVALID_PARAMETER。
+    const padded: Uint8Array = body.length >= 57
+      ? body
+      : SmbCrypto.concat(body, new Uint8Array(57 - body.length));
     const header: Uint8Array = Smb2Codec.buildHeader(Smb2Command.CREATE, messageId, treeId, sessionId, 32, 0);
-    return SmbCrypto.concat(header, body);
+    return SmbCrypto.concat(header, padded);
   }
 
   static parseCreate(packet: Uint8Array): Smb2FileId {
@@ -424,7 +430,8 @@ export class Smb2Codec {
       Smb2Codec.u32(0), // AdditionalInformation
       Smb2Codec.u32(0), // Flags
       Smb2Codec.u64(fileId.persistent),
-      Smb2Codec.u64(fileId.volatileId)
+      Smb2Codec.u64(fileId.volatileId),
+      Smb2Codec.u8(0) // Buffer（StructureSize=41 要求固定 40 + 至少 1 字节）
     );
     const header: Uint8Array = Smb2Codec.buildHeader(Smb2Command.QUERY_INFO, messageId, treeId, sessionId, 32, 0);
     return SmbCrypto.concat(header, body);
