@@ -132,6 +132,15 @@
 | 底部指示器多余 | 去掉 Swiper 圆点，只保留"当前 / 总数"数字 |
 | SMB `STATUS_INVALID_PARAMETER @CREATE` | 根因：CREATE（56 字节固定体）打开共享根时名字为空、请求体不足 StructureSize 声明的 57 字节；QUERY_INFO 同理（40 < 41）。补齐 padding 后用 Docker 起的真实 Samba 4.12 全流程验证通过 |
 
+## 4.8 v1.7.0 增量（第四轮真机反馈）
+
+| 问题 | 处理 |
+|---|---|
+| SMB 视频放不出、音频要等很久 | 音频改为与视频一致走 Range 流式；SMB 侧做读句柄复用、512KB 分块、按长度算 CreditCharge、MessageId 序列号前进、STATUS_END_OF_FILE 视为结束；HTTP 代理单次响应上限 8MB。实测真实 Samba 顺序读 64–69 MB/s、seek 15ms/4 次 |
+| 图片顺序与列表不一致 | 查看器改用与浏览页相同的 `FileSorter` + 当前排序方式 |
+| 图片"链接"应是作者字段里的链接 | 只从 EXIF 的"作者"（空则"版权"）里提取 URL 打开，不再回退到图片自身 URL |
+| 存储编辑/删除入口 | 改为列表项**左滑**显示"编辑 / 删除"（`swipeAction`），卡片上不再常驻按钮；内置来源不可删除 |
+
 ## 5. 风险
 
 | 风险 | 影响 | 缓解 |
