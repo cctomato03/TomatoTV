@@ -294,8 +294,14 @@ export struct ImageViewerPage {
   }
 
   private async openLink(): Promise<void> {
-    const target: string = this.linkTarget();
+    let target: string = this.linkTarget();
     if (target.length === 0) {
+      // 元数据可能还没读回来：再取一次
+      await this.reloadMetadataIfNeeded();
+      target = this.linkTarget();
+    }
+    if (target.length === 0) {
+      promptAction.showToast({ message: '这张图片没有作者链接' });
       return;
     }
     const context: common.UIAbilityContext = this.container.requireContext();
@@ -303,6 +309,16 @@ export struct ImageViewerPage {
     if (!opened) {
       promptAction.showToast({ message: '没有应用可以响应此链接' });
     }
+  }
+
+  /** 作者链接为空时，重新读一次元数据（切图后元数据是异步到达的） */
+  private async reloadMetadataIfNeeded(): Promise<void> {
+    const path: string = this.paths.length > 0 ? this.paths[this.index] : this.param.path;
+    this.readMetadata(path);
+    // 给元数据一个短暂的落地时间
+    await new Promise<void>((resolve: () => void) => {
+      setTimeout(() => resolve(), 400);
+    });
   }
 
   private resetZoom(): void {
@@ -430,23 +446,21 @@ export struct ImageViewerPage {
         .padding({ left: 12, right: 12, top: 12 })
         .position({ x: 0, y: 0 })
 
-        // 右下角：链接
-        if (this.linkTarget().length > 0) {
-          Button({ type: ButtonType.Circle }) {
-            SymbolGlyph(Symbols.link())
-              .fontSize(20)
-              .fontColor([Color.White])
-          }
-          .width(44)
-          .height(44)
-          .backgroundColor($r('app.color.brand'))
-          .margin({ right: 16, bottom: 24 })
-          .align(Alignment.BottomEnd)
-          .onClick(() => {
-            this.openLink();
-          })
-          .accessibilityText('打开图片链接')
+        // 右下角：链接（常显，点击时再判断有没有作者链接）
+        Button({ type: ButtonType.Circle }) {
+          SymbolGlyph(Symbols.link())
+            .fontSize(20)
+            .fontColor([Color.White])
         }
+        .width(44)
+        .height(44)
+        .backgroundColor($r('app.color.brand'))
+        .margin({ right: 16, bottom: 24 })
+        .align(Alignment.BottomEnd)
+        .onClick(() => {
+          this.openLink();
+        })
+        .accessibilityText('打开图片链接')
       }
       .width('100%')
       .height('100%')
