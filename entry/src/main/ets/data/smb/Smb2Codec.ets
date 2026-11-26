@@ -208,6 +208,24 @@ export class Smb2Codec {
     return SmbCrypto.concat(header, body, securityBlob);
   }
 
+  /**
+   * SESSION_SETUP 响应里的安全上下文 blob。
+   * 注意偏移与 NEGOTIATE 不同：StructureSize(64) / SessionFlags(66) /
+   * SecurityBufferOffset(68) / SecurityBufferLength(70)。
+   */
+  static sessionSetupBlob(packet: Uint8Array): Uint8Array {
+    const base: number = HEADER_SIZE;
+    if (packet.length < base + 8) {
+      return new Uint8Array(0);
+    }
+    const offset: number = Ntlm.readUint16(packet, base + 4);
+    const length: number = Ntlm.readUint16(packet, base + 6);
+    if (length === 0 || offset === 0 || offset + length > packet.length) {
+      return new Uint8Array(0);
+    }
+    return packet.slice(offset, offset + length);
+  }
+
   // ---------------- TREE_CONNECT ----------------
   static buildTreeConnect(messageId: number, sessionId: number, uncPath: string): Uint8Array {
     const pathBytes: Uint8Array = SmbCrypto.utf16le(uncPath);
@@ -312,7 +330,8 @@ export class Smb2Codec {
 
   static parseReadData(packet: Uint8Array): Uint8Array {
     const base: number = HEADER_SIZE;
-    const dataOffset: number = packet[base];
+    // READ Response：StructureSize(2) / DataOffset(1) / Reserved(1) / DataLength(4) ...
+    const dataOffset: number = packet[base + 2];
     const dataLength: number = Ntlm.readUint32(packet, base + 4);
     if (dataLength === 0) {
       return new Uint8Array(0);

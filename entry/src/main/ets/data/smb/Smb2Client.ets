@@ -35,7 +35,8 @@ export interface Smb2Options {
   rootPath: string;
 }
 
-const READ_CHUNK: number = 1024 * 1024;
+// SMB2 每 64KB 计 1 个 credit；用 64KB 分块可保证 CreditCharge 恒为 1
+const READ_CHUNK: number = 64 * 1024;
 const DIR_OUTPUT_LENGTH: number = 64 * 1024;
 
 /**
@@ -110,12 +111,18 @@ export class Smb2Client {
     let response: Smb2Header = await this.request(
       Smb2Codec.buildSessionSetup(this.allocMessageId(), blob, 0));
     if (response.status !== Smb2Status.MORE_PROCESSING_REQUIRED && response.status !== Smb2Status.SUCCESS) {
-      throw Smb2Client.mapStatus(response.status);
+      throw Smb2Client.mapStatus(response.status, Smb2Command.SESSION_SETUP);
     }
     this.sessionId = response.sessionId;
-    const serverBlob: Uint8Array = Smb2Codec.securityBlobOf(response.raw);
+    const serverBlob: Uint8Array = Smb2Codec.sessionSetupBlob(response.raw);
     if (serverBlob.length === 0) {
-      throw new FsError(FsErrorKind.AUTH, '服务器未返回 NTLM 挑战');
+      // 服务端直接返回成功且不给挑战：视为匿名/来宾会话已建立（如 IPC$ 匿名访问）
+      if (response.status === Smb2Status.SUCCESS) {
+        Logger.info('Smb2Client', 'SESSION_SETUP 成功但未返回挑战，按匿名会话继续');
+        this.requireSigning = false;
+        return;
+      }
+      throw new FsError(FsErrorKind.AUTH, '服务器未返回 NTLM 挑战（可能拒绝 NTLM 认证）');
     }
     challengeBlob = serverBlob;
     const ntlmChallenge = Ntlm.extractNtlmMessage(serverBlob);
@@ -137,7 +144,7 @@ export class Smb2Client {
 
     response = await this.request(Smb2Codec.buildSessionSetup(this.allocMessageId(), blob, this.sessionId));
     if (response.status !== Smb2Status.SUCCESS) {
-      throw Smb2Client.mapStatus(response.status);
+      throw Smb2Client.mapStatus(response.status, Smb2Command.SESSION_SETUP);
     }
     this.sessionId = response.sessionId;
     // 会话密钥：无密钥交换时等于 SessionBaseKey
@@ -170,7 +177,8 @@ export class Smb2Client {
   }
 
   private sign(packet: Uint8Array): Uint8Array {
-    if (this.signingKey.length === 0) {
+    // 未要求签名时不签：避免会话密钥推导有差异时被服务端判为签名校验失败
+    if (!this.requireSigning || this.signingKey.length === 0) {
       return packet;
     }
     const copy: Uint8Array = new Uint8Array(packet);
@@ -187,23 +195,40 @@ export class Smb2Client {
     if (this.tcp === null || this.closed) {
       throw new FsError(FsErrorKind.NETWORK, 'SMB 连接已关闭');
     }
-    const messageId: number = Smb2Codec.parseHeader(packet).messageId;
+    const header: Smb2Header = Smb2Codec.parseHeader(packet);
+    const messageId: number = header.messageId;
+    const command: number = header.command;
+    // CreditCharge：按报文长度/64KB 计算（至少 1）
+    const charge: number = Math.max(1, Math.ceil(packet.length / 65536));
+    Ntlm.writeUint16(packet, 6, charge);
     const signed: Uint8Array = this.sign(packet);
     const framed: Uint8Array = Smb2Codec.frame(signed);
     const promise: Promise<Smb2Header> = new Promise<Smb2Header>(
       (resolve: (value: Smb2Header) => void, reject: (reason?: Object) => void) => {
         this.pending.set(messageId, new PendingResponse(resolve, reject));
       });
+    // 超时保护：避免服务端无响应时页面永久转圈
+    const timeout: number = setTimeout(() => {
+      if (this.pending.delete(messageId)) {
+        Logger.warn('Smb2Client', `${Smb2Client.commandName(command)} 响应超时`);
+      }
+    }, 20000);
     try {
       await this.tcp.send({ data: framed.buffer as ArrayBuffer });
     } catch (err) {
       this.pending.delete(messageId);
       throw new FsError(FsErrorKind.NETWORK, 'SMB 发送失败');
     }
-    const response: Smb2Header = await promise;
+    let response: Smb2Header;
+    try {
+      response = await promise;
+    } finally {
+      clearTimeout(timeout);
+    }
     if (response.status !== Smb2Status.SUCCESS && response.status !== Smb2Status.BUFFER_OVERFLOW &&
       response.status !== Smb2Status.NO_MORE_FILES && response.status !== Smb2Status.MORE_PROCESSING_REQUIRED) {
-      throw Smb2Client.mapStatus(response.status);
+      Logger.warn('Smb2Client', `${Smb2Client.commandName(command)} 返回状态 0x${response.status.toString(16)}`);
+      throw Smb2Client.mapStatus(response.status, command);
     }
     return response;
   }
@@ -243,20 +268,56 @@ export class Smb2Client {
     }
   }
 
-  private static mapStatus(status: number): FsError {
+  private static commandName(command: number): string {
+    switch (command) {
+      case Smb2Command.NEGOTIATE:
+        return 'NEGOTIATE';
+      case Smb2Command.SESSION_SETUP:
+        return 'SESSION_SETUP';
+      case Smb2Command.LOGOFF:
+        return 'LOGOFF';
+      case Smb2Command.TREE_CONNECT:
+        return 'TREE_CONNECT';
+      case Smb2Command.CREATE:
+        return 'CREATE';
+      case Smb2Command.CLOSE:
+        return 'CLOSE';
+      case Smb2Command.READ:
+        return 'READ';
+      case Smb2Command.QUERY_DIRECTORY:
+        return 'QUERY_DIRECTORY';
+      case Smb2Command.QUERY_INFO:
+        return 'QUERY_INFO';
+      default:
+        return `CMD_${command}`;
+    }
+  }
+
+  private static mapStatus(status: number, command: number): FsError {
+    const code: string = `0x${status.toString(16)}`;
+    const where: string = Smb2Client.commandName(command);
     if (status === Smb2Status.LOGON_FAILURE) {
-      return new FsError(FsErrorKind.AUTH, `STATUS_LOGON_FAILURE(0x${status.toString(16)})`);
+      return new FsError(FsErrorKind.AUTH, `STATUS_LOGON_FAILURE(${code})`);
     }
     if (status === Smb2Status.ACCESS_DENIED) {
-      return new FsError(FsErrorKind.PERMISSION, `STATUS_ACCESS_DENIED(0x${status.toString(16)})`);
+      return new FsError(FsErrorKind.PERMISSION, `STATUS_ACCESS_DENIED(${code}) @${where}`);
     }
     if (status === Smb2Status.OBJECT_NAME_NOT_FOUND || status === Smb2Status.OBJECT_PATH_NOT_FOUND) {
-      return new FsError(FsErrorKind.NOT_FOUND, `STATUS_OBJECT_NOT_FOUND(0x${status.toString(16)})`);
+      return new FsError(FsErrorKind.NOT_FOUND, `STATUS_OBJECT_NOT_FOUND(${code}) @${where}`);
     }
     if (status === Smb2Status.BAD_NETWORK_NAME) {
-      return new FsError(FsErrorKind.UNSUPPORTED, '共享名不存在或不可访问');
+      return new FsError(FsErrorKind.UNSUPPORTED, '共享名不存在或不可访问（请检查 share 名称）');
     }
-    return new FsError(FsErrorKind.SERVER, `SMB2 状态 0x${status.toString(16)}`);
+    if (status === 0xC000000D) {
+      return new FsError(FsErrorKind.SERVER, `STATUS_INVALID_PARAMETER(${code}) @${where}`);
+    }
+    if (status === 0xC00000BB) {
+      return new FsError(FsErrorKind.UNSUPPORTED, `STATUS_NOT_SUPPORTED(${code}) @${where}`);
+    }
+    if (status === Smb2Status.FILE_IS_A_DIRECTORY) {
+      return new FsError(FsErrorKind.SERVER, `STATUS_FILE_IS_A_DIRECTORY(${code}) @${where}`);
+    }
+    return new FsError(FsErrorKind.SERVER, `${where} 返回 ${code}`);
   }
 
   // ---------------- 文件操作 ----------------
@@ -296,33 +357,45 @@ export class Smb2Client {
   async list(logicalPath: string): Promise<FileEntry[]> {
     const fileId: Smb2FileId = await this.open(logicalPath, true);
     const entries: FileEntry[] = [];
+    let rounds: number = 0;
+    let lastFirstPath: string = '';
     try {
       while (true) {
+        rounds++;
+        if (rounds > 4096) {
+          Logger.warn('Smb2Client', '目录枚举轮次异常，提前结束');
+          break;
+        }
         let response: Smb2Header;
         try {
           response = await this.request(Smb2Codec.buildQueryDirectory(this.allocMessageId(), this.sessionId,
             this.treeId, fileId, '*', DIR_OUTPUT_LENGTH));
         } catch (err) {
-          if (err instanceof FsError && err.kind === FsErrorKind.SERVER && err.message.includes('80000006')) {
+          // 枚举结束时部分服务端直接返回 STATUS_NO_MORE_FILES
+          if (err instanceof FsError && err.message.includes('80000006')) {
             break;
           }
           if (err instanceof Error) {
             throw err;
           }
-          throw new FsError(FsErrorKind.SERVER, '列目录失败');
+          throw new FsError(FsErrorKind.SERVER, 'QUERY_DIRECTORY failed');
         }
         if (response.status === Smb2Status.NO_MORE_FILES) {
           break;
         }
-        const batch: FileEntry[] = Smb2Codec.parseQueryDirectory(response.raw, logicalPath.length === 0 ? '/' : logicalPath);
+        const batch: FileEntry[] = Smb2Codec.parseQueryDirectory(response.raw,
+          logicalPath.length === 0 ? '/' : logicalPath);
         if (batch.length === 0) {
           break;
         }
+        if (rounds > 1 && batch[0].path === lastFirstPath) {
+          // 服务端没有推进枚举位置，避免死循环
+          Logger.warn('Smb2Client', '服务端未推进目录枚举，提前结束');
+          break;
+        }
+        lastFirstPath = batch[0].path;
         for (const entry of batch) {
           entries.push(entry);
-        }
-        if (response.status !== Smb2Status.BUFFER_OVERFLOW && batch.length < DIR_OUTPUT_LENGTH / 200) {
-          break;
         }
       }
     } finally {

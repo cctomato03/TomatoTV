@@ -1,8 +1,13 @@
 import { FsError, FsErrorKind } from '../fs/FileSystemClient';
 import { SmbCrypto } from './SmbCrypto';
 
-/** NTLM 协商标志（客户端使用的一组常用值） */
-const NEGOTIATE_FLAGS: number = 0xE2088237;
+/**
+ * NTLM 协商标志：UNICODE | REQUEST_TARGET | NTLM | ALWAYS_SIGN |
+ * EXTENDED_SESSIONSECURITY | TARGET_INFO | 128 | 56。
+ * 不声明 SIGN/SEAL/KEY_EXCH——我们不实现密钥交换，声明了会让服务端期待
+ * EncryptedRandomSessionKey，进而导致会话密钥与签名校验对不上。
+ */
+const NEGOTIATE_FLAGS: number = 0xA0888205;
 
 export interface MavPair {
   id: number;
