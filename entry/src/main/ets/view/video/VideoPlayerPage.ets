@@ -1,0 +1,351 @@
+import { MediaParam, NavDefaults } from '../../navigation/AppNav';
+import { AppContainer } from '../../app/AppContainer';
+import { FileSource } from '../../model/FileSource';
+import { PlayableMedia } from '../../data/fs/FileSystemClient';
+import { MediaDefaults, PlaybackSpeeds, TrackOption, VideoState } from '../../media/MediaTypes';
+import { VideoEngine } from '../../media/VideoEngine';
+import { Fmt } from '../../utils/Format';
+import { Symbols } from '../../components/Symbols';
+import { Logger } from '../../utils/Logger';
+
+const HIDE_DELAY_MS: number = 4000;
+const SEEK_STEP_MS: number = 10000;
+
+/** 视频播放页（规范 §7.10）：XComponent 全屏画面 + 手势 seek + 倍速/音轨/字幕 */
+@Component
+export struct VideoPlayerPage {
+  stack: NavPathStack = new NavPathStack();
+  param: MediaParam = NavDefaults.media();
+
+  @State videoState: VideoState = MediaDefaults.videoState('');
+  @State controlsVisible: boolean = true;
+  @State dragging: boolean = false;
+  @State dragValue: number = 0;
+  @State seekHint: string = '';
+  @State speedLabel: string = '1x';
+
+  private engine: VideoEngine = new VideoEngine();
+  private controller: XComponentController = new XComponentController();
+  private container: AppContainer = AppContainer.get();
+  private hideTimer: number = -1;
+  private opened: boolean = false;
+
+  aboutToAppear(): void {
+    this.engine.onChange((state: VideoState) => {
+      this.videoState = state;
+      this.speedLabel = PlaybackSpeeds.label(state.speed);
+    });
+  }
+
+  aboutToDisappear(): void {
+    this.clearHideTimer();
+    this.engine.release();
+  }
+
+  private clearHideTimer(): void {
+    if (this.hideTimer !== -1) {
+      clearTimeout(this.hideTimer);
+      this.hideTimer = -1;
+    }
+  }
+
+  private scheduleHide(): void {
+    this.clearHideTimer();
+    this.hideTimer = setTimeout(() => {
+      this.controlsVisible = false;
+    }, HIDE_DELAY_MS);
+  }
+
+  private toggleControls(): void {
+    this.controlsVisible = !this.controlsVisible;
+    if (this.controlsVisible) {
+      this.scheduleHide();
+    }
+  }
+
+  private async open(surfaceId: string): Promise<void> {
+    if (this.opened) {
+      return;
+    }
+    this.opened = true;
+    const source: FileSource | null = this.container.findSource(this.param.sourceId);
+    if (source === null) {
+      return;
+    }
+    try {
+      const playable: PlayableMedia = await this.container.repository!.playable(source, {
+        name: this.param.name,
+        path: this.param.path,
+        isDirectory: false,
+        size: this.param.size,
+        lastModified: 0,
+        mimeType: '',
+        kind: this.param.kind
+      });
+      await this.engine.open(playable, this.param.name, surfaceId);
+      await this.engine.loadTracks();
+      this.scheduleHide();
+    } catch (err) {
+      Logger.error('VideoPlayerPage', '打开视频失败', err as Error);
+    }
+  }
+
+  private seekBy(deltaMs: number): void {
+    this.engine.seekTo(this.videoState.positionMs + deltaMs);
+    this.showSeekHint(deltaMs > 0 ? '快进 10 秒' : '快退 10 秒');
+    this.scheduleHide();
+  }
+
+  private showSeekHint(text: string): void {
+    this.seekHint = text;
+    setTimeout(() => {
+      this.seekHint = '';
+    }, 900);
+  }
+
+  build() {
+    NavDestination() {
+      Stack({ alignContent: Alignment.Bottom }) {
+        XComponent({ id: 'tomato_video', type: XComponentType.SURFACE, controller: this.controller })
+          .width('100%')
+          .height('100%')
+          .onLoad(() => {
+            const surfaceId: string = this.controller.getXComponentSurfaceId();
+            this.open(surfaceId);
+          })
+          .onClick(() => this.toggleControls())
+
+        if (this.seekHint.length > 0) {
+          Text(this.seekHint)
+            .fontSize(15)
+            .fontColor(Color.White)
+            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+            .backgroundColor($r('app.color.player_scrim'))
+            .borderRadius(16)
+        }
+
+        if (this.videoState.loading) {
+          LoadingProgress()
+            .width(48)
+            .height(48)
+            .color(Color.White)
+        }
+
+        if (this.videoState.error !== null) {
+          Column({ space: 12 }) {
+            Text(this.videoState.error)
+              .fontSize(15)
+              .fontColor(Color.White)
+              .textAlign(TextAlign.Center)
+            Button('返回')
+              .type(ButtonType.Capsule)
+              .backgroundColor($r('app.color.brand'))
+              .onClick(() => this.stack.pop())
+          }
+          .padding(24)
+        }
+
+        if (this.controlsVisible) {
+          this.topBar()
+          this.centerBar()
+          this.bottomBar()
+        }
+      }
+      .width('100%')
+      .height('100%')
+      .backgroundColor(Color.Black)
+      .gesture(
+        PanGesture({ direction: PanDirection.Horizontal })
+          .onActionStart(() => {
+            this.dragging = true;
+            this.dragValue = this.videoState.positionMs;
+          })
+          .onActionUpdate((event: GestureEvent) => {
+            if (this.videoState.durationMs <= 0) {
+              return;
+            }
+            const ratio: number = event.offsetX / 360;
+            let target: number = this.dragValue + ratio * this.videoState.durationMs;
+            if (target < 0) {
+              target = 0;
+            }
+            if (target > this.videoState.durationMs) {
+              target = this.videoState.durationMs;
+            }
+            this.seekHint = `${Fmt.duration(target)} / ${Fmt.duration(this.videoState.durationMs)}`;
+          })
+          .onActionEnd((event: GestureEvent) => {
+            this.dragging = false;
+            if (this.videoState.durationMs > 0) {
+              const ratio: number = event.offsetX / 360;
+              const target: number = this.dragValue + ratio * this.videoState.durationMs;
+              this.engine.seekTo(target);
+            }
+            this.seekHint = '';
+            this.scheduleHide();
+          })
+      )
+    }
+    .hideTitleBar(true)
+    .backgroundColor(Color.Black)
+    .onBackPressed((): boolean => false)
+  }
+
+  @Builder
+  topBar() {
+    Row({ space: 8 }) {
+      Button({ type: ButtonType.Circle }) {
+        SymbolGlyph(Symbols.back()).fontSize(20).fontColor([Color.White])
+      }
+      .width(40)
+      .height(40)
+      .backgroundColor($r('app.color.player_scrim'))
+      .onClick(() => this.stack.pop())
+
+      Column({ space: 2 }) {
+        Text(this.param.name)
+          .fontSize(15)
+          .fontColor(Color.White)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.videoState.buffering ? '缓冲中…' : '')
+          .fontSize(11)
+          .fontColor(Color.White)
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      Button(this.speedLabel)
+        .height(32)
+        .backgroundColor($r('app.color.player_scrim'))
+        .fontColor(Color.White)
+        .fontSize(13)
+        .bindMenu(this.speedMenu())
+
+      if (this.videoState.audioTracks.length > 1) {
+        Button('音轨')
+          .height(32)
+          .backgroundColor($r('app.color.player_scrim'))
+          .fontColor(Color.White)
+          .fontSize(13)
+          .bindMenu(this.audioMenu())
+      }
+      if (this.videoState.subtitleTracks.length > 0) {
+        Button('字幕')
+          .height(32)
+          .backgroundColor($r('app.color.player_scrim'))
+          .fontColor(Color.White)
+          .fontSize(13)
+          .bindMenu(this.subtitleMenu())
+      }
+    }
+    .width('100%')
+    .padding(12)
+    .position({ x: 0, y: 0 })
+  }
+
+  @Builder
+  centerBar() {
+    Row({ space: 32 }) {
+      Button({ type: ButtonType.Circle }) {
+        SymbolGlyph(Symbols.previous()).fontSize(24).fontColor([Color.White])
+      }
+      .width(52)
+      .height(52)
+      .backgroundColor($r('app.color.player_scrim'))
+      .onClick(() => this.seekBy(-SEEK_STEP_MS))
+      .accessibilityText('快退 10 秒')
+
+      Button({ type: ButtonType.Circle }) {
+        SymbolGlyph(this.videoState.playing ? Symbols.pause() : Symbols.play())
+          .fontSize(28)
+          .fontColor([Color.White])
+      }
+      .width(64)
+      .height(64)
+      .backgroundColor($r('app.color.brand'))
+      .onClick(() => {
+        this.engine.toggle();
+        this.scheduleHide();
+      })
+
+      Button({ type: ButtonType.Circle }) {
+        SymbolGlyph(Symbols.next()).fontSize(24).fontColor([Color.White])
+      }
+      .width(52)
+      .height(52)
+      .backgroundColor($r('app.color.player_scrim'))
+      .onClick(() => this.seekBy(SEEK_STEP_MS))
+      .accessibilityText('快进 10 秒')
+    }
+    .justifyContent(FlexAlign.Center)
+    .width('100%')
+  }
+
+  @Builder
+  bottomBar() {
+    Column({ space: 6 }) {
+      Slider({
+        value: this.videoState.positionMs,
+        min: 0,
+        max: this.videoState.durationMs > 0 ? this.videoState.durationMs : 1,
+        step: 1
+      })
+        .width('100%')
+        .selectedColor($r('app.color.brand'))
+        .onChange((value: number, mode: SliderChangeMode) => {
+          if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+            this.engine.seekTo(value);
+            this.scheduleHide();
+          }
+        })
+      Row() {
+        Text(Fmt.duration(this.videoState.positionMs))
+          .fontSize(12)
+          .fontColor(Color.White)
+        Blank()
+        Text(Fmt.duration(this.videoState.durationMs))
+          .fontSize(12)
+          .fontColor(Color.White)
+      }
+      .width('100%')
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, bottom: 16 })
+  }
+
+  @Builder
+  speedMenu() {
+    Menu() {
+      ForEach(PlaybackSpeeds.LIST, (speed: number) => {
+        MenuItem({ content: PlaybackSpeeds.label(speed) })
+          .onClick(() => {
+            this.engine.setSpeed(speed);
+            this.scheduleHide();
+          })
+      }, (speed: number) => `${speed}`)
+    }
+  }
+
+  @Builder
+  audioMenu() {
+    Menu() {
+      ForEach(this.videoState.audioTracks, (track: TrackOption) => {
+        MenuItem({ content: track.label })
+          .onClick(() => this.engine.selectTrack(track.index))
+      }, (track: TrackOption) => `a${track.index}`)
+    }
+  }
+
+  @Builder
+  subtitleMenu() {
+    Menu() {
+      MenuItem({ content: '关闭字幕' })
+        .onClick(() => this.engine.selectTrack(-1))
+      ForEach(this.videoState.subtitleTracks, (track: TrackOption) => {
+        MenuItem({ content: track.label })
+          .onClick(() => this.engine.selectTrack(track.index))
+      }, (track: TrackOption) => `s${track.index}`)
+    }
+  }
+}
