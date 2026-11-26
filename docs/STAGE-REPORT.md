@@ -53,7 +53,7 @@
 | 项 | 情况 |
 |---|---|
 | 编译验证 | ✅ 使用 **OpenHarmony SDK 5.0.0 Release（API 12）** 完整编译通过，产出 `entry-default-unsigned.hap`（约 3.9MB，含离线文档渲染资源） |
-| 单元测试 | ✅ 24 项纯逻辑断言全部通过（`npm test`），CI 每次运行，Release 依赖通过 |
+| 单元测试 | ✅ 25 项纯逻辑断言全部通过（`npm test`），CI 每次运行，Release 依赖通过 |
 | 真机 / 模拟器验证 | ❌ 本次开发环境没有 DevEco Studio 与 HarmonyOS 设备，未做真机运行验证 |
 | CI 验证 | ✅ GitHub Actions 使用同一套脚本复现编译 |
 
@@ -64,7 +64,7 @@
 
 1. PPTX 应用内渲染（缺可离线集成的渲染库）。
 2. SMB（libsmb2 + NAPI）与 FTPS（显式 TLS）。
-4. 远程音视频的 Range 流式播放（`dataSrc` 回调式数据源）。
+4. 远程音视频流式播放的真机验证（本机回环 HTTP 代理已实现，见 DEVIATIONS §6）。
 5. 全格式原生播放引擎（FFmpeg + XComponent + AudioRenderer）与真正的音轨/字幕切换。
 6. 智慧屏方向键自定义焦点映射的真机走查。
 7. ArkTS 单元测试与 UI 测试工程。
@@ -77,6 +77,14 @@
 | M2TS 时长 | `MpegTsDuration` 修正尾窗同步相位对齐与末包边界；`VideoPlayerPage` 在系统时长缺失时回退 PCR 结果 |
 | 遥控器 | 视频/音频页 `onKeyEvent`（播放暂停、±10s seek、上下切歌），首页与浏览页 `defaultFocus` |
 | 测试 | 新增 `test/unit` + `scripts/test/run-unit.mjs`，24 项断言；CI 增加单元测试 job 并作为 Release 前置 |
+
+## 4.2 v1.3.0 增量
+
+| 项 | 说明 |
+|---|---|
+| 远程流式播放 | 新增 `MediaStreamServer`（127.0.0.1 只读 HTTP + Range/206/416），视频按需读远程片段，不整文件下载；播放失败自动回退缓存 |
+| Range 逻辑 | 抽出 `RangeHeader` 纯逻辑并对齐 `a-b` / `a-` / `-n` / 越界 / 非法头，纳入单元测试 |
+| 音频 | 保持缓存播放（体积小、起播稳定），等待真机验证后再切流式 |
 
 ## 5. 风险
 

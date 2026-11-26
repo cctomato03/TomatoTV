@@ -28,8 +28,9 @@ HarmonyOS NEXT 原生的本地与网络文件管理器，附带通用媒体播�
 | 音频播放（播放列表、封面、歌词、AVSession 后台） | ✅ |
 | PDF / Office 预览（应用内离线渲染） | ✅ pdf.js / docx-preview / SheetJS；PPTX 降级为系统打开方式 |
 | M2TS / TS PCR 时长探测 | ✅ 已接入播放器（系统时长缺失时回退 PCR 结果） |
+| 远程媒体 Range 流式播放（本机回环代理） | ✅ 视频流式，失败自动回退缓存 |
 | 缓存管理（统计、清理、LRU） | ✅ |
-| 单元测试（纯逻辑，CI 每次运行） | ✅ 24 项 |
+| 单元测试（纯逻辑，CI 每次运行） | ✅ 25 项 |
 | 智慧屏手机扫码填写参数（局域网 HTTP 服务 + Canvas 二维码） | ✅ |
 
 完整的能力清单、偏差与已知限制见 [`docs/DEVIATIONS.md`](./docs/DEVIATIONS.md)，
@@ -75,7 +76,7 @@ npm test
 ```
 
 覆盖文件类型判定、路径越界防护、排序、格式化、WebDAV XML 解析、M2TS PCR 时长、
-二维码编码（用 jsQR 反向解码校验）等 24 项纯逻辑断言，CI 每次运行。
+二维码编码（用 jsQR 反向解码校验）、HTTP Range 解析等 25 项纯逻辑断言，CI 每次运行。
 
 ## 本地构建（DevEco Studio）
 

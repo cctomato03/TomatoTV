@@ -52,15 +52,25 @@
   因此 `secure = true` 时直接抛出 `UNSUPPORTED` 并在表单提示，而不是静默降级为明文。
 - 纯 FTP（PASV/MLSD/REST/RETR）已实现。后续可用 C 库 + NAPI 补齐 FTPS。
 
-## 6. 远程媒体播放：先整文件落缓存再播放
+## 6. 远程媒体播放：本机回环 HTTP 代理实现 Range 流式播放
 
-- 文档 §8.6 / §12 期望视频按 Range 片段流式播放。
-- 现状：远程音视频通过 `RemoteCache.download()` 完整缓存后再用 `AVPlayer.fdSrc` 播放。
-  本机文件直接 `fd` 播放，零拷贝。
-- 原因：`AVPlayer.url` 不支持自定义 `Authorization` 头，WebDAV Basic Auth 需要鉴权；
-  自定义 Range 数据源（`dataSrc`）需要实现完整的回调式读写，工作量大且易出错。
-- 影响：首次播放远程大文件需要等待下载；缓存命中后起播很快。缓存页可查看/清理。
-- 后续：实现 `AVPlayer.dataSrc` 回调式随机读，直接对接 `FileSystemClient.readRange`。
+- 文档 §8.6 / §12 期望远程视频按 Range 流式播放，不做整文件下载。
+- 已实现（v1.3.0）：
+  - `utils/MediaStreamServer.ets`：在 `127.0.0.1`（8901 起自动选端口）起一个只读 HTTP/1.1 服务，
+    实现 `Accept-Ranges`、`206 Partial Content`、`Content-Range`、`416`；
+    播放器每次 `Range: bytes=a-b` 都通过 `FileSystemClient.readRange` 按需读取，
+    **不会整文件下载**；256KB 分块顺序发送，支持多路并发连接。
+  - URL 含 20 字符随机 token，且只监听回环地址，不对外暴露；
+    来源被编辑/删除或应用退出时注销条目并关闭服务（`release()` / `stop()`）。
+  - 为什么不直接把远程 URL 交给 `AVPlayer.url`：`AVPlayer.url` 无法携带
+    `Authorization` 等自定义头，WebDAV Basic Auth / FTP 都需要鉴权，因此中间加一层本机代理。
+- 回退策略：
+  - 视频：若流式播放触发播放器错误，自动改用"整文件缓存 + `fd`"重试一次（`allowStream = false`）；
+  - 音频：本来就直接走缓存（文件小、起播稳定，同时预热缓存）；
+  - 本机文件始终走 `fd`，零拷贝。
+- 单元测试：`RangeHeader` 的 `bytes=a-b` / `a-` / `-n` / 越界 / 非法头全部有断言（见 §13）。
+- 仍待真机验证：`AVPlayer` 对 `http://127.0.0.1` 明文回环地址的支持度、大文件长时间播放的
+  连接复用行为，以及 206 分段长度对 seek 的影响。
 
 ## 7. M2TS / TS 时长：已接入播放器，缺真实样本回归
 
@@ -139,14 +149,14 @@
 | §7.11 音频播放 | `view/audio/AudioPlayerPage.ets` | ✅ |
 | §7.12 缓存管理 | `view/cache/CachePage.ets` | ✅ |
 | §7.13 设置 | `view/settings/SettingsPage.ets` | ✅ |
-| §8 数据层 | `data/**` | ✅（SMB/FTPS 除外） |
+| §8 数据层 | `data/**` + `utils/MediaStreamServer.ets` | ✅（SMB/FTPS 除外） |
 | §9 媒体 | `media/**` | ⚠️ 见 §6/§7/§9（轨道切换受 SDK 限制） |
 | §10 安全 | `SecretStore`、`SafeLink`、`PathGuard`、`Logger.redact` | ✅ |
 | §11 权限 | `entry/src/main/module.json5` | ✅ |
 
 ## 13. 单元测试
 
-- `test/unit/logic.test.ts`：24 项纯逻辑断言
+- `test/unit/logic.test.ts`：25 项纯逻辑断言
   - 文件类型判定（视频/音频/图片/文本/文档/压缩包）、MIME 推断
   - `PathGuard` 规范化与越界防护、层级换算
   - 目录优先排序（名称/大小/时间升降序，且不修改入参）
@@ -154,6 +164,7 @@
   - WebDAV 207 Multi-Status 解析（含命名空间前缀、URL 编码中文名）
   - M2TS PCR 时长（188 / 192 字节包、非 TS 数据返回 0）
   - 二维码编码（尺寸/容量/定位图形结构 + 用 jsQR 反向解码验证 4 组载荷）
+  - HTTP `Range` 解析（`bytes=a-b` / `a-` / `-n` / 越界 / 非法头）
 - `scripts/test/run-unit.mjs`：用 esbuild 把 `.ets` 当 TypeScript 打包运行
   （相对导入自动补 `.ets`、`@kit.ArkTS` 映射到 Node 自带实现），所以测试不需要设备或 ArkUI 运行时。
 - CI：`ci.yml` 与 `release.yml` 均包含"单元测试（纯逻辑）"job，Release 需测试通过才构建发布。
