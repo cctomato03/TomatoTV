@@ -124,11 +124,20 @@ export class RemoteCache {
         return '';
       }
       const metaPath: string = `${this.entryDir(sourceId, key)}/meta.json`;
+      let expectedSize: number = 0;
       if (fs.accessSync(metaPath)) {
         const meta: CacheEntryMeta = JSON.parse(fs.readTextSync(metaPath)) as CacheEntryMeta;
         if (meta.complete !== true) {
           return '';
         }
+        expectedSize = meta.size;
+      }
+      // 旧版本可能写入过 0 字节的"已完成"条目：这里再校验一次文件大小，避免命中坏缓存
+      const actualSize: number = fs.statSync(data).size;
+      if (actualSize === 0 || (expectedSize > 0 && actualSize !== expectedSize)) {
+        Logger.warn('RemoteCache', `缓存条目不完整，重新下载 size=${actualSize}/${expectedSize}`);
+        this.discard(sourceId, path);
+        return '';
       }
       this.touch(key);
       return data;
