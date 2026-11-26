@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=6">
+  <title>PDF 预览</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #FFFBF8; }
+    #status { font: 14px -apple-system, "HarmonyOS Sans", sans-serif; color: #7A6A63; padding: 32px 20px; text-align: center; }
+    #pages { padding: 10px 8px 24px; }
+    canvas { display: block; margin: 0 auto 10px; max-width: 100%; border-radius: 8px; box-shadow: 0 1px 3px rgba(36, 27, 24, .14); }
+  </style>
+  <script src="pdf.min.js"></script>
+</head>
+<body>
+<div id="status">正在解析文档…</div>
+<div id="pages"></div>
+<script>
+  (function () {
+    var DOC_URL = 'https://tomato.doc.local/doc';
+    var WORKER_URL = 'https://tomato.doc.local/worker';
+    var MAX_PAGES = 120;
+    var status = document.getElementById('status');
+    var container = document.getElementById('pages');
+
+    function fail(message) {
+      status.textContent = message;
+    }
+
+    async function boot() {
+      if (typeof pdfjsLib === 'undefined') {
+        fail('渲染库未加载');
+        return;
+      }
+      try {
+        var workerResponse = await fetch(WORKER_URL);
+        var workerText = await workerResponse.text();
+        var workerBlob = new Blob([workerText], { type: 'text/javascript' });
+        pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(workerBlob);
+      } catch (error) {
+        fail('渲染引擎初始化失败：' + (error && error.message ? error.message : error));
+        return;
+      }
+      try {
+        var docResponse = await fetch(DOC_URL);
+        var bytes = new Uint8Array(await docResponse.arrayBuffer());
+        var pdf = await pdfjsLib.getDocument({
+          data: bytes,
+          isEvalSupported: false,
+          disableAutoFetch: true,
+          disableStream: true
+        }).promise;
+        status.textContent = '';
+        var total = Math.min(pdf.numPages, MAX_PAGES);
+        for (var index = 1; index <= total; index++) {
+          var page = await pdf.getPage(index);
+          var viewport = page.getViewport({ scale: 1.7 });
+          var canvas = document.createElement('canvas');
+          canvas.width = Math.floor(viewport.width);
+          canvas.height = Math.floor(viewport.height);
+          container.appendChild(canvas);
+          await page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
+          if (index % 2 === 0) {
+            await new Promise(function (resolve) { setTimeout(resolve, 0); });
+          }
+        }
+        if (pdf.numPages > total) {
+          var more = document.createElement('div');
+          more.id = 'status';
+          more.textContent = '文档共 ' + pdf.numPages + ' 页，已显示前 ' + total + ' 页';
+          container.appendChild(more);
+        }
+      } catch (error) {
+        fail('无法渲染该文档：' + (error && error.message ? error.message : error));
+      }
+    }
+
+    boot();
+  })();
+</script>
+</body>
+</html>

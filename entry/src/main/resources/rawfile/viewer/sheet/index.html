@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=6">
+  <title>表格预览</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #FFFBF8; }
+    #status { font: 14px -apple-system, "HarmonyOS Sans", sans-serif; color: #7A6A63; padding: 32px 20px; text-align: center; }
+    #tabs { display: flex; gap: 8px; padding: 10px 10px 0; overflow-x: auto; }
+    .tab { flex: 0 0 auto; font: 13px -apple-system, "HarmonyOS Sans", sans-serif; color: #7A6A63;
+           padding: 6px 12px; border-radius: 14px; background: #FFFFFF; border: 1px solid #EFE1DA; }
+    .tab.active { color: #FFFFFF; background: #E54835; border-color: #E54835; }
+    #sheet { padding: 10px 8px 24px; overflow-x: auto; }
+    table { border-collapse: collapse; font: 12px -apple-system, "HarmonyOS Sans", sans-serif; color: #241B18; background: #FFFFFF; }
+    td { border: 1px solid #EFE1DA; padding: 4px 8px; white-space: nowrap; }
+    tr:first-child td { background: #FBE9E5; font-weight: 600; }
+  </style>
+  <script src="xlsx.full.min.js"></script>
+</head>
+<body>
+<div id="status">正在解析表格…</div>
+<div id="tabs"></div>
+<div id="sheet"></div>
+<script>
+  (function () {
+    var DOC_URL = 'https://tomato.doc.local/doc';
+    var MAX_ROWS = 2000;
+    var status = document.getElementById('status');
+    var tabs = document.getElementById('tabs');
+    var sheet = document.getElementById('sheet');
+
+    function fail(message) {
+      status.textContent = message;
+    }
+
+    function show(wb, name, activeTab) {
+      var ws = wb.Sheets[name];
+      var html = XLSX.utils.sheet_to_html(ws, { editable: false });
+      sheet.innerHTML = html;
+      var table = sheet.querySelector('table');
+      if (table) {
+        var rows = table.querySelectorAll('tr');
+        for (var i = MAX_ROWS; i < rows.length; i++) {
+          rows[i].parentNode.removeChild(rows[i]);
+        }
+        if (rows.length > MAX_ROWS) {
+          var note = document.createElement('div');
+          note.style.padding = '8px 4px';
+          note.style.color = '#7A6A63';
+          note.style.font = '12px -apple-system, "HarmonyOS Sans", sans-serif';
+          note.textContent = '表格较大，仅显示前 ' + MAX_ROWS + ' 行';
+          sheet.appendChild(note);
+        }
+      }
+      var tabNodes = tabs.querySelectorAll('.tab');
+      for (var j = 0; j < tabNodes.length; j++) {
+        tabNodes[j].className = tabNodes[j].getAttribute('data-name') === activeTab ? 'tab active' : 'tab';
+      }
+    }
+
+    async function boot() {
+      if (typeof XLSX === 'undefined') {
+        fail('渲染库未加载');
+        return;
+      }
+      try {
+        var response = await fetch(DOC_URL);
+        var bytes = new Uint8Array(await response.arrayBuffer());
+        var wb = XLSX.read(bytes, { type: 'array' });
+        if (!wb.SheetNames || wb.SheetNames.length === 0) {
+          fail('工作簿没有工作表');
+          return;
+        }
+        status.textContent = '';
+        wb.SheetNames.forEach(function (name, index) {
+          var tab = document.createElement('div');
+          tab.className = index === 0 ? 'tab active' : 'tab';
+          tab.textContent = name;
+          tab.setAttribute('data-name', name);
+          tab.addEventListener('click', function () { show(wb, name, name); });
+          tabs.appendChild(tab);
+        });
+        show(wb, wb.SheetNames[0], wb.SheetNames[0]);
+      } catch (error) {
+        fail('无法渲染该表格：' + (error && error.message ? error.message : error));
+      }
+    }
+
+    boot();
+  })();
+</script>
+</body>
+</html>

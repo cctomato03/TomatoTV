@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=6">
+  <title>Word 预览</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #FFFBF8; }
+    #status { font: 14px -apple-system, "HarmonyOS Sans", sans-serif; color: #7A6A63; padding: 32px 20px; text-align: center; }
+    #root { padding: 8px 4px 24px; }
+    .docx-wrapper { background: transparent !important; padding: 0 !important; }
+    .docx-wrapper > section.docx { box-shadow: 0 1px 3px rgba(36, 27, 24, .14); border-radius: 8px; margin: 0 auto 10px !important; }
+  </style>
+  <script src="jszip.min.js"></script>
+  <script src="docx-preview.min.js"></script>
+</head>
+<body>
+<div id="status">正在解析文档…</div>
+<div id="root"></div>
+<script>
+  (function () {
+    var DOC_URL = 'https://tomato.doc.local/doc';
+    var status = document.getElementById('status');
+    var root = document.getElementById('root');
+
+    function fail(message) {
+      status.textContent = message;
+    }
+
+    async function boot() {
+      if (typeof docx === 'undefined') {
+        fail('渲染库未加载');
+        return;
+      }
+      try {
+        var response = await fetch(DOC_URL);
+        var buffer = await response.arrayBuffer();
+        status.textContent = '';
+        await docx.renderAsync(buffer, root, null, {
+          className: 'docx',
+          inWrapper: true,
+          ignoreWidth: false,
+          ignoreHeight: true,
+          breakPages: true,
+          useBase64URL: true,
+          experimental: true
+        });
+        if (root.childElementCount === 0) {
+          fail('文档内容为空');
+        }
+      } catch (error) {
+        fail('无法渲染该文档：' + (error && error.message ? error.message : error));
+      }
+    }
+
+    boot();
+  })();
+</script>
+</body>
+</html>

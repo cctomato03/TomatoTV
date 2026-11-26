@@ -120,6 +120,39 @@ export class FileRepository {
     return TextDecoderUtil.decode(bytes);
   }
 
+  /** 读取文档原始字节（PDF / Office 离线预览用），分块读取避免整文件驻留 */
+  async readDocument(source: FileSource, entry: FileEntry, maxBytes: number): Promise<ArrayBuffer> {
+    const client: FileSystemClient = await this.clientFor(source);
+    if (source.type === SourceType.LOCAL) {
+      const local: LocalFileSystem = client as LocalFileSystem;
+      return local.readAll(entry.path, maxBytes);
+    }
+    const size: number = entry.size > 0 ? Math.min(entry.size, maxBytes) : maxBytes;
+    const chunkSize: number = 512 * 1024;
+    const chunks: ArrayBuffer[] = [];
+    let offset: number = 0;
+    while (offset < size) {
+      const want: number = Math.min(chunkSize, size - offset);
+      const buffer: ArrayBuffer = await client.readRange(entry.path, offset, want);
+      if (buffer.byteLength === 0) {
+        break;
+      }
+      chunks.push(buffer);
+      offset += buffer.byteLength;
+      if (buffer.byteLength < want) {
+        break;
+      }
+    }
+    const merged: ArrayBuffer = new ArrayBuffer(offset);
+    const view: Uint8Array = new Uint8Array(merged);
+    let cursor: number = 0;
+    for (const chunk of chunks) {
+      view.set(new Uint8Array(chunk), cursor);
+      cursor += chunk.byteLength;
+    }
+    return merged;
+  }
+
   async closeAll(): Promise<void> {
     const ids: string[] = [];
     this.clients.forEach((value: FileSystemClient, key: string) => {
