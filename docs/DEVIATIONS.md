@@ -19,13 +19,14 @@
   满足"禁止明文落盘 / 日志脱敏"的实质要求。
 - 位置：`entry/src/main/ets/data/crypto/SecretStore.ets`。
 
-## 3. PDF / Office 预览：应用内离线渲染（PPTX 除外）
+## 3. PDF / Office 预览：应用内离线渲染（含 PPTX）
 
 - 文档 §7.7 / §7.8 要求优先系统 Kit，其次 `Web` + 应用内离线渲染库。
 - 当前 SDK（API 12 公开版）没有系统 PDF / Office 预览 Kit，因此采用第二种方案，已实现：
   - `resources/rawfile/viewer/pdf`：pdf.js 3.11（UMD 版本）+ 独立 worker，逐页渲染到 canvas；
   - `resources/rawfile/viewer/docx`：docx-preview 0.3 + JSZip，按页渲染 Word；
   - `resources/rawfile/viewer/sheet`：SheetJS(xlsx) 0.18，多工作表切换；
+  - `resources/rawfile/viewer/pptx`：pptx-preview 1.0.7（内置 JSZip/echarts），幻灯片列表渲染；
   - `components/DocumentWebView.ets`：`Web` 组件加载 rawfile 内页面，文档字节由
     `onInterceptRequest` 注入虚拟同源地址 `https://tomato.doc.local/doc`。
 - 安全（§10.7）：
@@ -34,23 +35,40 @@
   - `domStorageAccess` / `fileAccess` / `onlineImageAccess` 关闭，`mixedMode` 关闭。
 - 限制：
   - 单文件上限 64MB；PDF 最多渲染 120 页、表格最多显示 2000 行，超出会明确提示；
-  - **PPTX 仍降级**：没有可离线集成的渲染库，走系统"打开方式"并保留文件信息；
+  - 已用无头 Chrome 对 pdf/docx/xlsx/pptx 四个页面做过真实渲染集成测试（`npm run test:viewer`）；
   - `resource://rawfile` 页面 + fetch 拦截组合的行为需真机验证（见 §11）。
 
-## 4. SMB：明确不支持，不静默失败
+## 4. SMB：已用纯 ArkTS 实现 SMB2.1（NTLMv2）
 
-- 文档 §8.4 允许"若首版无法稳定支持，UI 保留类型但明确提示"。
-- 实现：`SmbFileSystem` 所有操作抛出 `UNSUPPORTED`，浏览页与编辑页都会显示
-  "当前版本暂不支持 SMB：需要 libsmb2 的 NAPI 封装"。
-- 后续：交叉编译 libsmb2 + OpenSSL，通过 NAPI 暴露 connect/list/stat/open/read/seek/close，
-  并保证大文件随机读。
+- 文档 §8.4 优先使用 SDK 官方 SMB 能力；当前 SDK 没有，因此自研了协议栈而不是引 NAPI：
+  - `data/smb/SmbCrypto.ets`：MD4 / MD5 / SHA-256 / HMAC-MD5 / HMAC-SHA256（RFC 1320/1321/6234/2202/4231 向量全部通过单测）；
+  - `data/smb/Ntlm.ets`：NTLMv2（含 MIC）、SPNEGO NegTokenInit/NegTokenResp 的 DER 编解码；
+    NTProofStr / SessionBaseKey 与 **MS-NLMP 4.2.4 官方示例逐字节一致**；
+  - `data/smb/Smb2Codec.ets`：SMB2 头、NEGOTIATE / SESSION_SETUP / TREE_CONNECT / CREATE /
+    QUERY_DIRECTORY / QUERY_INFO / READ / CLOSE 的编解码；
+  - `data/smb/Smb2Client.ets`：NetBIOS 分帧、MessageId 管理、报文签名（HMAC-SHA256）、会话/树管理；
+  - `data/fs/SmbFileSystem.ets`：接入统一 FileSystemClient（list / stat / readRange）。
+- 已验证：
+  - 单元测试覆盖全部密码学与 NTLM 报文；
+  - 本地冒烟脚本 `npm run test:smb` 对着真实 Windows SMB 服务端跑通了 **NEGOTIATE**
+    （协商到 0x0210，正确解析 SecurityMode 与方言）。
+- 未验证 / 限制：
+  - 本机 Windows 服务端在 SESSION_SETUP 阶段返回 `STATUS_INVALID_PARAMETER`，
+    用第三方参考客户端（`@marsaud/smb2`，同样是原始 NTLMSSP）测试也是同样结果，
+    判断是该机器的 NTLM 加固策略所致，**因此端到端认证尚未在真实服务端验证**；
+    需要在你的 NAS/Samba（通常支持 NTLMv2）上跑一次 `npm run test:smb` 确认。
+  - 只实现 SMB 2.0.2 / 2.1：不支持 3.x 的 AES-CMAC 签名与加密，也不支持 Kerberos。
+  - 不支持 DFS、写操作、compound 请求；大文件按 1MB 分块 READ，已满足随机读需求。
+- 调试建议：`Logger` 已输出 NEGOTIATE / 会话建立结果；失败时先看 `kind`（AUTH/SERVER/NETWORK）。
 
-## 5. FTPS（显式 TLS）：明确不支持
+## 5. FTPS：支持隐式 TLS，不支持显式（AUTH TLS）
 
-- 文档 §8.5 要求 FTPS 显式 TLS。
-- 当前 `TCPSocket`/`TLSSocket` 能力无法在已连接的明文控制连接上执行 STARTTLS，
-  因此 `secure = true` 时直接抛出 `UNSUPPORTED` 并在表单提示，而不是静默降级为明文。
-- 纯 FTP（PASV/MLSD/REST/RETR）已实现。后续可用 C 库 + NAPI 补齐 FTPS。
+- 已实现：**隐式 FTPS**（Implicit TLS，默认端口 990）通过 `TLSSocket` 直接建连，
+  控制通道与 PASV 数据通道都走 TLS（`data/fs/FtpFileSystem.ets` 的 `openChannel()`）。
+- 不支持：**显式 FTPS**（21 端口 `AUTH TLS` / STARTTLS）——当前 SDK 的 TLS Socket
+  无法在已连接的明文 socket 上升级 TLS。若服务器只支持显式 FTPS，会返回明确提示
+  "服务器未在 TLS 上返回 FTP 欢迎信息…"，而不是静默失败。
+- UI：来源编辑页的开关文案已改为"使用 FTPS（隐式 TLS）"，并与端口联动（21 ↔ 990）。
 
 ## 6. 远程媒体播放：本机回环 HTTP 代理实现 Range 流式播放
 
@@ -143,13 +161,13 @@
 | §7.4 添加/编辑存储 | `view/source/SourceEditPage.ets` | ✅ |
 | §7.5 智慧屏扫码 | `utils/PairingServer.ets` + `utils/QrCode.ets` + `components/QrView.ets` | ✅ |
 | §7.6 文本预览 | `view/preview/TextPreviewPage.ets` | ✅ |
-| §7.7 / §7.8 PDF、Office | `view/preview/DocPreviewPage.ets` + `components/DocumentWebView.ets` + `rawfile/viewer/*` | ✅（PPTX 降级） |
+| §7.7 / §7.8 PDF、Office | `view/preview/DocPreviewPage.ets` + `components/DocumentWebView.ets` + `rawfile/viewer/*` | ✅ |
 | §7.9 图片查看器 | `view/image/ImageViewerPage.ets` | ✅ |
 | §7.10 视频播放 | `view/video/VideoPlayerPage.ets` | ✅ |
 | §7.11 音频播放 | `view/audio/AudioPlayerPage.ets` | ✅ |
 | §7.12 缓存管理 | `view/cache/CachePage.ets` | ✅ |
 | §7.13 设置 | `view/settings/SettingsPage.ets` | ✅ |
-| §8 数据层 | `data/**` + `utils/MediaStreamServer.ets` | ✅（SMB/FTPS 除外） |
+| §8 数据层 | `data/**`（含 `data/smb/`）+ `utils/MediaStreamServer.ets` | ✅（仅显式 FTPS 除外） |
 | §9 媒体 | `media/**` | ⚠️ 见 §6/§7/§9（轨道切换受 SDK 限制） |
 | §10 安全 | `SecretStore`、`SafeLink`、`PathGuard`、`Logger.redact` | ✅ |
 | §11 权限 | `entry/src/main/module.json5` | ✅ |
@@ -157,6 +175,7 @@
 ## 13. 单元测试
 
 - `test/unit/logic.test.ts`：25 项纯逻辑断言
+- `test/unit/smb.test.ts`：12 项 SMB/NTLM 断言（RFC 向量 + MS-NLMP 示例）
   - 文件类型判定（视频/音频/图片/文本/文档/压缩包）、MIME 推断
   - `PathGuard` 规范化与越界防护、层级换算
   - 目录优先排序（名称/大小/时间升降序，且不修改入参）
@@ -168,4 +187,6 @@
 - `scripts/test/run-unit.mjs`：用 esbuild 把 `.ets` 当 TypeScript 打包运行
   （相对导入自动补 `.ets`、`@kit.ArkTS` 映射到 Node 自带实现），所以测试不需要设备或 ArkUI 运行时。
 - CI：`ci.yml` 与 `release.yml` 均包含"单元测试（纯逻辑）"job，Release 需测试通过才构建发布。
-- 不在单测范围内（必须真机）：播放器、TCP 局域网服务、Web 文档预览、Picker、焦点走查。
+- `scripts/test/run-viewer.mjs`：无头 Chrome 真实渲染 pdf/docx/xlsx/pptx 四个页面（CI 每次运行）。
+- `scripts/test/run-smb-smoke.mjs`：对着真实 SMB 服务端做协议冒烟（本地手动运行）。
+- 不在单测范围内（必须真机）：播放器、TCP 局域网服务、Web 文档预览的真机行为、Picker、焦点走查。

@@ -18,19 +18,20 @@ HarmonyOS NEXT 原生的本地与网络文件管理器，附带通用媒体播�
 | 首页来源卡片、添加/编辑/删除来源 | ✅ |
 | 本机目录（Picker + 持久化授权 + 应用私有目录） | ✅ |
 | WebDAV（PROPFIND 列表 / Range 读取 / 错误码映射） | ✅ |
-| FTP（PASV / USER-PASS / MLSD-LIST / SIZE / MDTM / REST+RETR） | ✅ |
-| SMB | ⛔ 明确提示“当前版本暂不支持”（需 libsmb2 NAPI） |
+| FTP / FTPS-隐式 TLS（PASV / USER-PASS / MLSD-LIST / SIZE / MDTM / REST+RETR） | ✅ |
+| SMB（SMB2.1 + NTLMv2 + 签名） | ✅ 纯 ArkTS 实现，见 `data/smb/` |
 | 目录浏览：面包屑、排序、列表/网格、刷新、空/错/权限三态 | ✅ |
 | 目录历史快照 + 滚动位置恢复（最多 32 层） | ✅ |
 | 文本预览（编码探测、4MB 上限） | ✅ |
 | 图片查看器（滑动、双指缩放、双击、元数据、作者链接白名单） | ✅ |
 | 视频播放（AVPlayer + XComponent、倍速、手势 seek） | ✅ |
 | 音频播放（播放列表、封面、歌词、AVSession 后台） | ✅ |
-| PDF / Office 预览（应用内离线渲染） | ✅ pdf.js / docx-preview / SheetJS；PPTX 降级为系统打开方式 |
+| PDF / Office 预览（应用内离线渲染） | ✅ pdf.js / docx-preview / SheetJS / pptx-preview |
 | M2TS / TS PCR 时长探测 | ✅ 已接入播放器（系统时长缺失时回退 PCR 结果） |
 | 远程媒体 Range 流式播放（本机回环代理） | ✅ 视频流式，失败自动回退缓存 |
 | 缓存管理（统计、清理、LRU） | ✅ |
-| 单元测试（纯逻辑，CI 每次运行） | ✅ 25 项 |
+| 单元测试（纯逻辑，CI 每次运行） | ✅ 25 项逻辑 + 12 项 SMB/NTLM |
+| 文档预览页集成测试（无头 Chrome） | ✅ pdf / docx / xlsx / pptx 四个页面 |
 | 智慧屏手机扫码填写参数（局域网 HTTP 服务 + Canvas 二维码） | ✅ |
 
 完整的能力清单、偏差与已知限制见 [`docs/DEVIATIONS.md`](./docs/DEVIATIONS.md)，
@@ -76,7 +77,20 @@ npm test
 ```
 
 覆盖文件类型判定、路径越界防护、排序、格式化、WebDAV XML 解析、M2TS PCR 时长、
-二维码编码（用 jsQR 反向解码校验）、HTTP Range 解析等 25 项纯逻辑断言，CI 每次运行。
+二维码编码（用 jsQR 反向解码校验）、HTTP Range 解析等 25 项纯逻辑断言，
+以及 12 项 SMB/NTLM 断言（含 MD4/MD5/SHA256/HMAC 的 RFC 向量与 MS-NLMP 4.2.4 NTLMv2 官方示例）。
+
+文档预览页另有无头浏览器集成测试（真实渲染 pdf/docx/xlsx/pptx 样本）：
+
+```bash
+npm run test:viewer
+```
+
+SMB 客户端另有一个本地冒烟脚本（需要一台 SMB 服务端）：
+
+```bash
+SMB_SMOKE_HOST=192.168.1.9 SMB_SMOKE_SHARE=media npm run test:smb
+```
 
 ## 本地构建（DevEco Studio）
 
