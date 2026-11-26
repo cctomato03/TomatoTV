@@ -46,7 +46,7 @@ export struct ImageViewerPage {
 
   @State paths: string[] = [];
   @State index: number = 0;
-  @State initialIndex: number = 0;
+
   @State ready: boolean = false;
   @State zoomScale: number = 1;
   @State offsetX: number = 0;
@@ -108,7 +108,6 @@ export struct ImageViewerPage {
     }
     this.paths = images;
     this.index = current;
-    this.initialIndex = current;
     this.ready = true;
     this.syncInfo(this.paths[current]);
     this.prefetchNeighbors();
@@ -193,12 +192,18 @@ export struct ImageViewerPage {
     this.readMetadata(path);
   }
 
+  /**
+   * 读取元数据（尺寸 / 拍摄时间 / 作者 / 版权 / 作者链接）。
+   *
+   * 统一从"文件字节"建 ImageSource：远程来源的缓存文件没有扩展名、
+   * 或本机 Picker URI 直接当路径用，都可能让 createImageSource(path) 失败，
+   * 一旦失败就既没有尺寸也没有作者链接（表现为"链接按钮不显示"）。
+   */
   private readMetadata(path: string): void {
     const repository = this.container.repository;
     if (repository === null) {
       return;
     }
-    const source: FileSource = this.sourceRef;
     const entry: FileEntry = {
       name: ImageViewerPage.nameOf(path),
       path: path,
@@ -208,16 +213,14 @@ export struct ImageViewerPage {
       mimeType: '',
       kind: this.param.kind
     };
-    let target: Promise<string>;
-    if (source.type === SourceType.LOCAL) {
-      target = Promise.resolve(path);
-    } else {
-      target = repository.materializeToPath(source, entry);
-    }
-    target.then((localPath: string) => {
+    repository.readDocument(this.sourceRef, entry, MAX_IMAGE_BYTES).then((bytes: ArrayBuffer) => {
+      if (bytes.byteLength === 0) {
+        Logger.warn('ImageViewerPage', '读不到图片字节，跳过元数据');
+        return;
+      }
       let imageSource: image.ImageSource | null = null;
       try {
-        imageSource = image.createImageSource(localPath);
+        imageSource = image.createImageSource(bytes);
         const pending: image.ImageSource = imageSource;
         pending.getImageInfo().then((pixelInfo: image.ImageInfo) => {
           this.info = {
@@ -235,17 +238,23 @@ export struct ImageViewerPage {
         const properties: Promise<string>[] = [
           pending.getImageProperty(image.PropertyKey.DATE_TIME_ORIGINAL),
           pending.getImageProperty(image.PropertyKey.ARTIST),
-          pending.getImageProperty(image.PropertyKey.COPYRIGHT)
+          pending.getImageProperty(image.PropertyKey.COPYRIGHT),
+          pending.getImageProperty(image.PropertyKey.IMAGE_DESCRIPTION)
         ];
         Promise.all(properties).then((values: string[]) => {
           const author: string = values[1] === undefined ? '' : values[1];
           const copyright: string = values[2] === undefined ? '' : values[2];
-          // 链接只来自"作者"字段（这类信息通常是打开某个 App 的链接），
-          // 没有的话再看版权字段；都不会回退到图片自身的 URL。
+          const description: string = values[3] === undefined ? '' : values[3];
+          // 链接按"作者 → 版权 → 图片描述"的顺序找；都必须是带协议的 URL
           let link: string = SafeLink.firstUrlAnyScheme(author);
           if (link.length === 0) {
             link = SafeLink.firstUrlAnyScheme(copyright);
           }
+          if (link.length === 0) {
+            link = SafeLink.firstUrlAnyScheme(description);
+          }
+          Logger.info('ImageViewerPage',
+            `元数据 author=${author} copyright=${copyright} link=${link}`);
           this.info = {
             width: this.info.width,
             height: this.info.height,
@@ -272,7 +281,7 @@ export struct ImageViewerPage {
         Logger.warn('ImageViewerPage', '创建 ImageSource 失败');
       }
     }).catch((err: Error) => {
-      Logger.warn('ImageViewerPage', '读取图片元数据失败');
+      Logger.warn('ImageViewerPage', '读取图片字节失败，跳过元数据');
     });
   }
 
@@ -324,17 +333,16 @@ export struct ImageViewerPage {
               })
             }, (item: string, itemIndex: number) => `${item}_${itemIndex}`)
           }
-          .index(this.initialIndex)
+          .index($$this.index)
           .indicator(false)
           .loop(false)
           .disableSwipe(this.zoomScale > 1.01)
           .width('100%')
           .height('100%')
           .onChange((newIndex: number) => {
-            if (newIndex === this.index) {
+            if (newIndex < 0 || newIndex >= this.paths.length) {
               return;
             }
-            this.index = newIndex;
             this.resetZoom();
             this.syncInfo(this.paths[newIndex]);
             this.prefetchNeighbors();
