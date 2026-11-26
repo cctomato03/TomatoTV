@@ -16,6 +16,7 @@ import { WebDavXml } from '../../entry/src/main/ets/data/fs/WebDavXml';
 import { ByteReader, MpegTsDuration } from '../../entry/src/main/ets/media/MpegTsDuration';
 import { QrCode } from '../../entry/src/main/ets/utils/QrCode';
 import { SourceFactory, SourceType, SourceUrl } from '../../entry/src/main/ets/model/FileSource';
+import { RangeHeader } from '../../entry/src/main/ets/utils/RangeHeader';
 
 let passed: number = 0;
 const failures: string[] = [];
@@ -367,6 +368,40 @@ check('SourceFactory 地址展示', () => {
   smb.rootPath = '/movies/';
   assert.equal(SourceFactory.displayAddress(smb), 'smb://nas:445/media/movies');
   assert.equal(SourceFactory.typeLabel(SourceType.SMB), 'SMB');
+});
+
+// ---------------- HTTP Range ----------------
+check('RangeHeader 解析各种 Range', () => {
+  const size = 1000;
+  let spec = RangeHeader.parse('', size);
+  assert.equal(spec.start, 0);
+  assert.equal(spec.end, 999);
+  assert.equal(spec.partial, false);
+  assert.equal(spec.valid, true);
+
+  spec = RangeHeader.parse('bytes=0-', size);
+  assert.deepEqual([spec.start, spec.end, spec.partial], [0, 999, false]);
+
+  spec = RangeHeader.parse('bytes=100-199', size);
+  assert.deepEqual([spec.start, spec.end, spec.partial], [100, 199, true]);
+
+  spec = RangeHeader.parse('bytes=500-', size);
+  assert.deepEqual([spec.start, spec.end, spec.partial], [500, 999, true]);
+
+  spec = RangeHeader.parse('bytes=-200', size);
+  assert.deepEqual([spec.start, spec.end, spec.partial], [800, 999, true]);
+
+  spec = RangeHeader.parse('bytes=-5000', size);
+  assert.deepEqual([spec.start, spec.end, spec.partial], [0, 999, false]);
+
+  spec = RangeHeader.parse('bytes=900-100000', size);
+  assert.deepEqual([spec.start, spec.end, spec.partial], [900, 999, true]);
+
+  spec = RangeHeader.parse('bytes=1000-', size);
+  assert.equal(spec.valid, false);
+
+  spec = RangeHeader.parse('bytes=abc', size);
+  assert.deepEqual([spec.start, spec.end, spec.valid], [0, 999, true]);
 });
 
 // ---------------- 汇总 ----------------
