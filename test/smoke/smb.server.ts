@@ -296,7 +296,14 @@ export class Smb2TestServer {
       return this.simpleResponse(header, 0xc000000d, u16(9));
     }
     const type = token.readUInt32LE(signature + 8);
+    const headerSession: bigint = header.sessionId;
     if (type === 1) {
+      if (headerSession !== BigInt(0)) {
+        this.fail(`首个 SESSION_SETUP 的 header SessionId 应为 0，实际 ${headerSession.toString()}`);
+      }
+      if (body.readBigUInt64LE(16) !== BigInt(0)) {
+        this.fail('首个 SESSION_SETUP 的 PreviousSessionId 应为 0');
+      }
       this.sessionCount = 1;
       const challenge = this.ntlmType2();
       const fixed = Buffer.alloc(8);
@@ -308,6 +315,12 @@ export class Smb2TestServer {
         Buffer.concat([fixed, challenge]), { sessionId: this.sessionId });
     }
     if (type === 3) {
+      if (headerSession !== this.sessionId) {
+        this.fail(`Type3 的 header SessionId 应为 ${this.sessionId.toString()}，实际 ${headerSession.toString()}`);
+      }
+      if (body.readBigUInt64LE(16) !== BigInt(0)) {
+        this.fail('Type3 的 PreviousSessionId 应为 0（新会话不允许重连语义）');
+      }
       // 校验 Type3 的关键字段布局
       const ntResponseLen = token.readUInt16LE(signature + 20);
       const ntResponseOffset = token.readUInt32LE(signature + 24);

@@ -191,20 +191,28 @@ export class Smb2Codec {
   }
 
   // ---------------- SESSION_SETUP ----------------
-  static buildSessionSetup(messageId: number, securityBlob: Uint8Array, previousSessionId: number): Uint8Array {
+  /**
+   * SESSION_SETUP 请求（MS-SMB2 2.2.5）。
+   *
+   * sessionId：首个请求必须为 0；携带 NTLM Type3 的后续请求必须填服务端在上一响应里
+   * 分配到的 SessionId（填 0 会被 Windows / Samba 判为 STATUS_INVALID_PARAMETER）。
+   * previousSessionId：重连已有会话时才填，新会话必须为 0。
+   */
+  static buildSessionSetup(messageId: number, sessionId: number, securityBlob: Uint8Array,
+    previousSessionId: number): Uint8Array {
     const bodySize: number = 24;
     const blobOffset: number = HEADER_SIZE + bodySize;
     const body: Uint8Array = SmbCrypto.concat(
       Smb2Codec.u16(25), // StructureSize
       Smb2Codec.u8(0), // Flags
       Smb2Codec.u8(1), // SecurityMode: signing enabled
-      Smb2Codec.u32(0), // Capabilities
+      Smb2Codec.u32(0), // Capabilities（须与 NEGOTIATE 一致）
       Smb2Codec.u32(0), // Channel
       Smb2Codec.u16(blobOffset),
       Smb2Codec.u16(securityBlob.length),
       Smb2Codec.u64(previousSessionId)
     );
-    const header: Uint8Array = Smb2Codec.buildHeader(Smb2Command.SESSION_SETUP, messageId, 0, 0, 32, 0);
+    const header: Uint8Array = Smb2Codec.buildHeader(Smb2Command.SESSION_SETUP, messageId, 0, sessionId, 32, 0);
     return SmbCrypto.concat(header, body, securityBlob);
   }
 

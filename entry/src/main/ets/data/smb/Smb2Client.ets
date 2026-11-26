@@ -108,8 +108,15 @@ export class Smb2Client {
     const negotiateBlob: Uint8Array = blob;
     let challengeBlob: Uint8Array = new Uint8Array(0);
 
+    // 首个 SESSION_SETUP：header SessionId 必须为 0、PreviousSessionId 必须为 0
     let response: Smb2Header = await this.request(
-      Smb2Codec.buildSessionSetup(this.allocMessageId(), blob, 0));
+      Smb2Codec.buildSessionSetup(this.allocMessageId(), 0, blob, 0));
+    if (response.status === 0xC000000D) {
+      // 少数服务端只接受裸 NTLMSSP（不包 SPNEGO），再试一次
+      Logger.warn('Smb2Client', 'SPNEGO 形式被拒，改用裸 NTLMSSP 重试');
+      blob = type1;
+      response = await this.request(Smb2Codec.buildSessionSetup(this.allocMessageId(), 0, blob, 0));
+    }
     if (response.status !== Smb2Status.MORE_PROCESSING_REQUIRED && response.status !== Smb2Status.SUCCESS) {
       throw Smb2Client.mapStatus(response.status, Smb2Command.SESSION_SETUP);
     }
@@ -142,11 +149,15 @@ export class Smb2Client {
       Ntlm.nowFileTime(), challenge.targetInfo, mic);
     blob = Ntlm.wrapSpnegoResp(type3);
 
-    response = await this.request(Smb2Codec.buildSessionSetup(this.allocMessageId(), blob, this.sessionId));
+    // 携带 Type3 的第二个请求：header SessionId 用服务端分配的会话 id，PreviousSessionId 仍为 0
+    response = await this.request(
+      Smb2Codec.buildSessionSetup(this.allocMessageId(), this.sessionId, blob, 0));
     if (response.status !== Smb2Status.SUCCESS) {
       throw Smb2Client.mapStatus(response.status, Smb2Command.SESSION_SETUP);
     }
-    this.sessionId = response.sessionId;
+    if (response.sessionId !== 0) {
+      this.sessionId = response.sessionId;
+    }
     // 会话密钥：无密钥交换时等于 SessionBaseKey
     const computed: NtlmV2Result = Ntlm.computeV2({
       user: this.options.user,
