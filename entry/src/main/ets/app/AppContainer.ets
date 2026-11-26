@@ -6,6 +6,7 @@ import { SettingsStore } from '../data/store/SettingsStore';
 import { SourceStore } from '../data/store/SourceStore';
 import { RemoteCache } from '../data/cache/RemoteCache';
 import { FileRepository } from '../data/repo/FileRepository';
+import { MediaStreamServer } from '../utils/MediaStreamServer';
 import { Logger } from '../utils/Logger';
 
 /**
@@ -100,5 +101,6 @@ export class AppContainer {
     if (this.repository !== null) {
       await this.repository.closeAll();
     }
+    await MediaStreamServer.get().stop();
   }
 }

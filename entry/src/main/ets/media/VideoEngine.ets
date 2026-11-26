@@ -69,6 +69,8 @@ export class VideoEngine {
       if (source.fd >= 0) {
         const descriptor: media.AVFileDescriptor = { fd: source.fd, offset: 0, length: -1 };
         player.fdSrc = descriptor;
+      } else if (source.url.length > 0) {
+        player.url = source.url;
       } else {
         player.url = source.path;
       }

@@ -1,6 +1,7 @@
 import { MediaParam, NavDefaults } from '../../navigation/AppNav';
 import { AppContainer } from '../../app/AppContainer';
 import { FileSource } from '../../model/FileSource';
+import { FileEntry } from '../../model/FileEntry';
 import { FileKinds } from '../../model/FileKinds';
 import { PlayableMedia } from '../../data/fs/FileSystemClient';
 import { MediaDefaults, PlaybackSpeeds, TrackOption, VideoState } from '../../media/MediaTypes';
@@ -34,6 +35,10 @@ export struct VideoPlayerPage {
   private container: AppContainer = AppContainer.get();
   private hideTimer: number = -1;
   private opened: boolean = false;
+  private usedStream: boolean = false;
+  private retriedCache: boolean = false;
+  private lastSource: FileSource | null = null;
+  private lastEntry: FileEntry | null = null;
 
   /** 系统时长不可用（常见于 BDAV .m2ts）时用 PCR 探测结果驱动进度条（规范 §9.3） */
   private effectiveDuration(): number {
@@ -63,7 +68,29 @@ export struct VideoPlayerPage {
     this.engine.onChange((state: VideoState) => {
       this.videoState = state;
       this.speedLabel = PlaybackSpeeds.label(state.speed);
+      if (state.error !== null && this.usedStream && !this.retriedCache) {
+        this.retriedCache = true;
+        Logger.warn('VideoPlayerPage', '流式播放失败，回退为本地缓存播放');
+        this.retryWithCache();
+      }
     });
+  }
+
+  /** 远程流式播放失败时用"整文件缓存 + fd"再试一次，保证旧行为可用 */
+  private async retryWithCache(): Promise<void> {
+    const source: FileSource | null = this.lastSource;
+    const entry: FileEntry | null = this.lastEntry;
+    if (source === null || entry === null) {
+      return;
+    }
+    try {
+      const playable: PlayableMedia = await this.container.repository!.playable(source, entry, false);
+      this.usedStream = false;
+      const surfaceId: string = this.controller.getXComponentSurfaceId();
+      await this.engine.open(playable, this.param.name, surfaceId);
+    } catch (err) {
+      Logger.error('VideoPlayerPage', '回退缓存播放失败', err as Error);
+    }
   }
 
   aboutToDisappear(): void {
@@ -102,7 +129,7 @@ export struct VideoPlayerPage {
       return;
     }
     try {
-      const playable: PlayableMedia = await this.container.repository!.playable(source, {
+      const entry: FileEntry = {
         name: this.param.name,
         path: this.param.path,
         isDirectory: false,
@@ -110,7 +137,11 @@ export struct VideoPlayerPage {
         lastModified: 0,
         mimeType: '',
         kind: this.param.kind
-      });
+      };
+      this.lastSource = source;
+      this.lastEntry = entry;
+      const playable: PlayableMedia = await this.container.repository!.playable(source, entry);
+      this.usedStream = playable.url.length > 0;
       await this.engine.open(playable, this.param.name, surfaceId);
       await this.engine.loadTracks();
       this.scheduleHide();

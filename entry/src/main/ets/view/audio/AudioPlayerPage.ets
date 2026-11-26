@@ -117,7 +117,7 @@ export struct AudioPlayerPage {
         lastModified: 0,
         mimeType: '',
         kind: PreviewKind.AUDIO
-      });
+      }, false);
       if (token !== this.loadToken) {
         return;
       }

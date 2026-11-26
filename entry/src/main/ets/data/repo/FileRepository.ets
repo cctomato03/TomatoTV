@@ -10,6 +10,7 @@ import { FtpFileSystem } from '../fs/FtpFileSystem';
 import { SmbFileSystem } from '../fs/SmbFileSystem';
 import { RemoteCache } from '../cache/RemoteCache';
 import { SecretResolver } from './SecretResolver';
+import { MediaStreamServer } from '../../utils/MediaStreamServer';
 import { Logger } from '../../utils/Logger';
 
 /**
@@ -55,6 +56,7 @@ export class FileRepository {
   }
 
   async invalidate(sourceId: string): Promise<void> {
+    MediaStreamServer.get().release(sourceId);
     const client: FileSystemClient | undefined = this.clients.get(sourceId);
     this.clients.delete(sourceId);
     if (client !== undefined) {
@@ -90,12 +92,25 @@ export class FileRepository {
     return this.cache.download(client, source.id, entry.path, entry.size);
   }
 
-  /** 媒体播放句柄：本机直接用 fd，远程先落缓存再播放 */
-  async playable(source: FileSource, entry: FileEntry): Promise<PlayableMedia> {
+  /**
+   * 媒体播放句柄：
+   *  - 本机文件直接用 fd（零拷贝）；
+   *  - 远程文件优先走本机回环 HTTP 代理，真正按 Range 流式播放（不整文件下载）；
+   *  - allowStream = false 或代理不可用时，退回"整文件缓存 + fd"。
+   */
+  async playable(source: FileSource, entry: FileEntry, allowStream: boolean = true): Promise<PlayableMedia> {
+    const mimeType: string = FileKinds.mimeOfKind(entry.kind, entry.name);
     if (source.type === SourceType.LOCAL) {
       const client: FileSystemClient = await this.clientFor(source);
       const local: LocalFileSystem = client as LocalFileSystem;
-      return local.playable(entry.path, FileKinds.mimeOfKind(entry.kind, entry.name));
+      return local.playable(entry.path, mimeType);
+    }
+    if (allowStream) {
+      const client: FileSystemClient = await this.clientFor(source);
+      const url: string = await MediaStreamServer.get().register(client, source.id, entry.path, entry.size, mimeType);
+      if (url.length > 0) {
+        return { fd: -1, path: '', url: url, mimeType: mimeType };
+      }
     }
     const localPath: string = await this.materializeToPath(source, entry);
     const file: fs.File = fs.openSync(localPath, fs.OpenMode.READ_ONLY);
@@ -103,7 +118,7 @@ export class FileRepository {
       fd: file.fd,
       path: localPath,
       url: '',
-      mimeType: FileKinds.mimeOfKind(entry.kind, entry.name)
+      mimeType: mimeType
     };
   }
 
