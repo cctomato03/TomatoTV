@@ -16,7 +16,7 @@ if [ ! -f package.json ]; then
 fi
 
 echo "[info] 从 $REGISTRY 安装 hvigor@$HVIGOR_VERSION"
-npm install --registry "$REGISTRY" --no-audit --no-fund --loglevel=error \
+npm install --registry "$REGISTRY" --no-audit --no-fund --no-save --loglevel=error \
   "@ohos/hvigor@${HVIGOR_VERSION}" "@ohos/hvigor-ohos-plugin@${HVIGOR_VERSION}"
 
 test -f node_modules/@ohos/hvigor/bin/hvigor.js

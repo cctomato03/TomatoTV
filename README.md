@@ -26,9 +26,10 @@ HarmonyOS NEXT 原生的本地与网络文件管理器，附带通用媒体播�
 | 图片查看器（滑动、双指缩放、双击、元数据、作者链接白名单） | ✅ |
 | 视频播放（AVPlayer + XComponent、倍速、手势 seek） | ✅ |
 | 音频播放（播放列表、封面、歌词、AVSession 后台） | ✅ |
-| PDF / Office 预览 | ⚠️ 走系统“打开方式”，应用内渲染待后续版本 |
-| M2TS / TS PCR 时长探测 | ✅ 算法实现，待真机验证 |
+| PDF / Office 预览（应用内离线渲染） | ✅ pdf.js / docx-preview / SheetJS；PPTX 降级为系统打开方式 |
+| M2TS / TS PCR 时长探测 | ✅ 已接入播放器（系统时长缺失时回退 PCR 结果） |
 | 缓存管理（统计、清理、LRU） | ✅ |
+| 单元测试（纯逻辑，CI 每次运行） | ✅ 24 项 |
 | 智慧屏手机扫码填写参数（局域网 HTTP 服务 + Canvas 二维码） | ✅ |
 
 完整的能力清单、偏差与已知限制见 [`docs/DEVIATIONS.md`](./docs/DEVIATIONS.md)，
@@ -54,12 +55,27 @@ TomatoTV/
 │       │   ├── media/            播放引擎、M2TS 时长、歌词
 │       │   ├── view/             home / browse / source / preview / image / video / audio / cache / settings
 │       │   ├── components/       来源卡片、列表行、网格、空状态、Symbol
-│       │   └── utils/            断点、格式化、日志脱敏、安全链接、事件总线
-│       ├── resources/            颜色/尺寸 Token、深色模式、图标
+│       │   ├── utils/            断点、格式化、日志脱敏、安全链接、事件总线、二维码、局域网服务
+│       │   └── components/       来源卡片、列表行、网格、空状态、Symbol、文档预览容器
+│       ├── resources/
+│       │   ├── base/             颜色/尺寸 Token、深色模式、图标
+│       │   └── rawfile/viewer/   离线渲染资源：pdf.js / docx-preview+JSZip / SheetJS
 │       └── module.json5          四设备类型与权限声明
-├── scripts/ci/                   CI 辅助脚本
+├── scripts/ci/                   CI 辅助脚本（SDK 准备、hvigor 安装、配置转换）
+├── scripts/test/                 单元测试执行器（esbuild 打包 .ets 后运行）
+├── test/unit/                    纯逻辑单元测试用例
 └── docs/                         开发与交付文档
 ```
+
+## 单元测试
+
+```bash
+npm install --registry=https://registry.npmjs.org/   # 仅测试工具链（esbuild / jsqr）
+npm test
+```
+
+覆盖文件类型判定、路径越界防护、排序、格式化、WebDAV XML 解析、M2TS PCR 时长、
+二维码编码（用 jsQR 反向解码校验）等 24 项纯逻辑断言，CI 每次运行。
 
 ## 本地构建（DevEco Studio）
 

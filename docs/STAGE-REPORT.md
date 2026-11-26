@@ -11,8 +11,8 @@
 | 阶段 1 工程骨架 | Stage 工程、`com.cctomato.tv`、四设备类型、`Navigation`、主题 Token、断点布局、首页/设置空壳 | ✅ 完成 |
 | 阶段 2 本机与浏览 | Picker + 持久化 URI、FileKinds/FileEntry/LocalFileSystem、来源卡片、浏览列表/网格、排序、面包屑、加载/空/错误、目录历史与滚动恢复 | ✅ 完成 |
 | 阶段 3 远程来源 | WebDAV 完整、FTP/FTPS（FTP 完成，FTPS 明确不支持）、加密凭据、测试连接、编辑/删除、远程缓存与清理；SMB 明确不支持 | ⚠️ 部分 |
-| 阶段 4 预览 | 文本、图片（含元数据与作者链接规则）、文件信息/系统打开方式；PDF/Office 降级为系统打开方式 | ⚠️ 部分 |
-| 阶段 5 媒体 | 媒体类型路由分离、AVPlayer 通用格式、视频手势/倍速/音轨字幕菜单、音频播放列表/封面/歌词/后台、M2TS PCR 算法 | ⚠️ 部分（全格式原生引擎未做） |
+| 阶段 4 预览 | 文本、图片（元数据与作者链接规则）、文件信息/系统打开方式；PDF/DOCX/XLSX 应用内离线渲染（pdf.js / docx-preview / SheetJS），PPTX 走系统打开方式 | ✅ 完成 |
+| 阶段 5 媒体 | 媒体类型路由分离、AVPlayer 通用格式、视频手势/倍速/音轨字幕菜单、音频播放列表/封面/歌词/后台、M2TS PCR 时长已接入播放器、遥控器按键 | ⚠️ 部分（全格式原生引擎与真正轨道切换受 SDK 限制） |
 | 阶段 6 多设备 | 断点布局、大屏分栏、焦点可达、TV 强制布局开关、智慧屏手机扫码填写参数（局域网 HTTP 服务 + Canvas 二维码 + 字段回显） | ✅ 完成 |
 | 阶段 7 稳定性与发布 | 生命周期释放、CI 构建、Release 分发、文档 | ✅ 完成 |
 
@@ -52,22 +52,31 @@
 
 | 项 | 情况 |
 |---|---|
-| 编译验证 | ✅ 使用 **OpenHarmony SDK 5.0.0 Release（API 12）** 完整编译通过，产出 `entry-default-unsigned.hap`（约 1.4MB） |
+| 编译验证 | ✅ 使用 **OpenHarmony SDK 5.0.0 Release（API 12）** 完整编译通过，产出 `entry-default-unsigned.hap`（约 3.9MB，含离线文档渲染资源） |
+| 单元测试 | ✅ 24 项纯逻辑断言全部通过（`npm test`），CI 每次运行，Release 依赖通过 |
 | 真机 / 模拟器验证 | ❌ 本次开发环境没有 DevEco Studio 与 HarmonyOS 设备，未做真机运行验证 |
 | CI 验证 | ✅ GitHub Actions 使用同一套脚本复现编译 |
-| 单元测试 | ❌ 未编写（`MpegTsDuration` 等纯逻辑模块建议后续补测试工程） |
 
 > 需要注意的是：OpenHarmony SDK 与 HarmonyOS SDK 的 API 集合高度重叠（`@kit.*` 均可用），
 > 编译通过说明 ArkTS 语法与 API 使用正确，但**不能替代真机行为验证**。
 
 ## 4. 未完成项（按优先级）
 
-1. PDF / Office 应用内渲染（内置离线渲染库 + `Web` 组件）。
+1. PPTX 应用内渲染（缺可离线集成的渲染库）。
 2. SMB（libsmb2 + NAPI）与 FTPS（显式 TLS）。
 4. 远程音视频的 Range 流式播放（`dataSrc` 回调式数据源）。
 5. 全格式原生播放引擎（FFmpeg + XComponent + AudioRenderer）与真正的音轨/字幕切换。
 6. 智慧屏方向键自定义焦点映射的真机走查。
 7. ArkTS 单元测试与 UI 测试工程。
+
+## 4.1 v1.2.0 增量
+
+| 项 | 说明 |
+|---|---|
+| 文档预览 | 新增 `rawfile/viewer/{pdf,docx,sheet}` 离线渲染资源与 `DocumentWebView` 容器；PDF/DOCX/XLSX 应用内预览，字节经 `onInterceptRequest` 注入，无外发请求 |
+| M2TS 时长 | `MpegTsDuration` 修正尾窗同步相位对齐与末包边界；`VideoPlayerPage` 在系统时长缺失时回退 PCR 结果 |
+| 遥控器 | 视频/音频页 `onKeyEvent`（播放暂停、±10s seek、上下切歌），首页与浏览页 `defaultFocus` |
+| 测试 | 新增 `test/unit` + `scripts/test/run-unit.mjs`，24 项断言；CI 增加单元测试 job 并作为 Release 前置 |
 
 ## 5. 风险
 

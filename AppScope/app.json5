@@ -2,10 +2,11 @@
   "app": {
     "bundleName": "com.cctomato.tv",
     "vendor": "cctomato",
-    "versionCode": 1000100,
-    "versionName": "1.1.0",
+    "versionCode": 1000200,
+    "versionName": "1.2.0",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }
 }
+
 

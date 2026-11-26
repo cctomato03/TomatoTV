@@ -27,6 +27,10 @@
 /artifacts
 *.log
 
+# ---- 单元测试临时产物 ----
+/.tmp-unit
+/package-lock.json
+
 # ---- 系统 ----
 .DS_Store
 Thumbs.db
