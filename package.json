@@ -1,0 +1,16 @@
+{
+  "name": "tomato-tv",
+  "version": "1.2.0",
+  "private": true,
+  "description": "TomatoTV - HarmonyOS NEXT 文件管理器与媒体播放器（仓库级工具链）",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node scripts/test/run-unit.mjs",
+    "ci:prepare": "node scripts/ci/prepare-openharmony.mjs",
+    "ci:restore": "node scripts/ci/prepare-openharmony.mjs --restore"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.0",
+    "jsqr": "1.4.0"
+  }
+}

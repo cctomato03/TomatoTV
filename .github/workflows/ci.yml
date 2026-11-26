@@ -11,6 +11,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  unit-tests:
+    name: 单元测试（纯逻辑）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 缓存测试依赖
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: unit-deps-${{ runner.os }}-${{ hashFiles('package.json') }}
+
+      - name: 安装测试依赖
+        run: npm install --registry=https://registry.npmjs.org/ --no-audit --no-fund --loglevel=error
+
+      - name: 运行单元测试
+        run: node scripts/test/run-unit.mjs
+
   build-hap:
     name: 编译 HarmonyOS HAP
     runs-on: ubuntu-latest

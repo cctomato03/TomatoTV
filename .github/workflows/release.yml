@@ -14,10 +14,31 @@ permissions:
   contents: write
 
 jobs:
+  unit-tests:
+    name: 单元测试（纯逻辑）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装测试依赖
+        run: npm install --registry=https://registry.npmjs.org/ --no-audit --no-fund --loglevel=error
+
+      - name: 运行单元测试
+        run: node scripts/test/run-unit.mjs
+
   release:
     name: 构建并发布 Release
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    needs: unit-tests
 
     steps:
       - name: 检出代码
