@@ -123,6 +123,15 @@
 | 图片轮播左右切换"图不变"、页码索引不对 | 像素按路径缓存 + 预解码相邻图 + 未命中时显式加载态；Swiper index 只做初始页，之后由 onChange 驱动 |
 | SMB `STATUS_INVALID_PARAMETER @SESSION_SETUP` | 第二个 SESSION_SETUP 的 header SessionId 之前发的是 0，改为服务端分配的会话 id（PreviousSessionId 保持 0）；并用本机 Windows 服务端验证：错误从 INVALID_PARAMETER 变为 LOGON_FAILURE（凭据假），证明报文已被接受 |
 
+## 4.7 v1.6.0 增量（第三轮真机反馈）
+
+| 问题 | 处理 |
+|---|---|
+| 图片查看器进入后一直转圈，滑一下才出图 | 根因是 ForEach 子项不随父组件普通 Map 变化重绘；改为每张图独立 `ImageSlide` 组件（@State PixelMap）+ 共享 `ImageMemoryCache`（LRU + 并发去重） |
+| 查看器需要"打开链接"且不要限制 URL | 右下角新增链接按钮：EXIF 链接优先，否则打开图片在来源上的 URL（webdav/ftp/smb scheme），不做白名单，交系统分发；信息弹层里也显示并可打开 |
+| 底部指示器多余 | 去掉 Swiper 圆点，只保留"当前 / 总数"数字 |
+| SMB `STATUS_INVALID_PARAMETER @CREATE` | 根因：CREATE（56 字节固定体）打开共享根时名字为空、请求体不足 StructureSize 声明的 57 字节；QUERY_INFO 同理（40 < 41）。补齐 padding 后用 Docker 起的真实 Samba 4.12 全流程验证通过 |
+
 ## 5. 风险
 
 | 风险 | 影响 | 缓解 |

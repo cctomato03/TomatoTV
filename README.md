@@ -114,10 +114,20 @@ npm run test:smb       # SMB2：NEGOTIATE -> NTLMv2 -> TREE_CONNECT -> 列目录
 npm run test:webdav    # WebDAV：PROPFIND 列表 + Range 分段读取
 ```
 
-对真实 SMB 服务器做冒烟（可选，需要一台可达的 SMB 服务端）：
+对真实 SMB 服务器做全流程冒烟（connect → 列目录 → stat → 读文件）：
 
 ```bash
-SMB_SMOKE_HOST=192.168.1.9 SMB_SMOKE_SHARE=media SMB_SMOKE_USER=u SMB_SMOKE_PASSWORD=p npm run test:smb:live
+SMB_SMOKE_HOST=192.168.1.9 SMB_SMOKE_SHARE=media \
+SMB_SMOKE_USER=u SMB_SMOKE_PASSWORD=p npm run test:smb:live
+```
+
+本地也可以用 Docker 起一个真实 Samba 自测：
+
+```bash
+docker run -d --name smbtest -p 1445:445 -v $PWD/testdata:/mount \
+  dperson/samba -u "alice;secreT!23" -s "media;/mount;yes;no;no;alice" -p
+SMB_SMOKE_PORT=1445 SMB_SMOKE_USER=alice SMB_SMOKE_PASSWORD='secreT!23' \
+SMB_SMOKE_SHARE=media npm run test:smb:live
 ```
 
 ## 本地构建（DevEco Studio）

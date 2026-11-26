@@ -72,6 +72,15 @@
      变为 `STATUS_LOGON_FAILURE(0xc000006d)`（凭据是假的），证明 NEGOTIATE/NTLM 全链路已被服务端接受。
      一致性测试服务端也加了对应断言（首个请求 SessionId 必须 0、Type3 必须等于会话 id）。
   另外增加：SPNEGO 形式被拒时自动改用裸 NTLMSSP 重试一次。
+- v1.6.0 修复（真机反馈 `STATUS_INVALID_PARAMETER @CREATE`）：
+  5. **SMB2 请求体最小长度**：`StructureSize` 的含义是"固定部分 + 至少 1 字节 Buffer"。
+     CREATE 固定 56 字节，打开**共享根**时文件名为空，请求体正好 56 字节，
+     Samba 在 `smbd_smb2_request_verify_sizes(smb2req, 0x39)`（0x39=57）处直接判
+     STATUS_INVALID_PARAMETER；QUERY_INFO 固定 40 字节、StructureSize=41 同理。
+     修复：这两个请求体不足声明长度时补齐 padding。
+     验证：用 Docker 起真实 **Samba 4.12** 容器（`-u alice -s media`）后，
+     NEGOTIATE → NTLMv2 → TREE_CONNECT → list(/) → list(/sub) → stat → readRange
+     全流程通过（读出真实文件内容），带 rootPath 的情况也通过。
 - 仍未验证 / 限制：
   - 本机 Windows 服务端在 SESSION_SETUP 阶段返回 `STATUS_INVALID_PARAMETER`，
     第三方参考客户端（`@marsaud/smb2`）在该机器上同样被拒，判断是 Windows 的 NTLM
@@ -238,6 +247,16 @@ v1.5.1 追加：
 - **目录内缩略图**：新增 `utils/ThumbnailService.ets`（内存缓存 60 张 + LRU、并发 2、去重、
   远程复用 RemoteCache），列表行与网格单元在 `aboutToAppear` 就异步加载缩略图，
   解码尺寸 192px（约 9MB 上限），离开浏览页时清空。
-- **查看器轮播**：像素改为按路径缓存（LRU 5 张）+ 预解码左右相邻图，左右滑动命中缓存即刻出图；
-  未命中时先显示加载态再替换，不会再出现"滑过去了但图没变"；Swiper 的 index 只用于初始页，
-  之后完全由 onChange 驱动，页码指示器才准确。
+- **查看器轮播**：像素改为按路径缓存 + 预解码左右相邻图，左右滑动命中缓存即刻出图；
+  Swiper 的 index 只用于初始页，之后完全由 onChange 驱动，页码指示器才准确。
+
+v1.6.0 追加（真机反馈"进查看器一直转圈，滑一下才出图"）：
+- 根因：ArkUI 的 `ForEach` 子项**不会因为父组件里"非状态数据"（普通 Map）变化而重绘**，
+  首张图解码完成只是改了父组件的普通 Map，页面没有刷新。
+- 修复：每张图抽成独立组件 `components/ImageSlide.ets`，自己持有 `@State PixelMap`，
+  解码完成即局部刷新；像素缓存抽成 `utils/ImageMemoryCache.ets`（LRU 6 张 + 并发去重），
+  预加载与展示共用同一份缓存。
+- 底部圆点指示器去掉，只保留"当前 / 总数"数字。
+- 右下角"链接"按钮：优先打开 EXIF 里的链接，否则打开该图片在来源上的 URL
+  （WebDAV/FTP/SMB 拼出对应 scheme 的 URL），**不做 scheme 白名单**，直接交给系统按 URL 分发。
+  这一条是按产品要求偏离了文档 §7.9 的白名单限制（§10.6 的安全性由系统和目标应用保证）。
