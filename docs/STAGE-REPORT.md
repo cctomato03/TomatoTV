@@ -105,6 +105,16 @@
 | 已有存储缺少修改入口 | 来源卡片新增显式"编辑"按钮（长按仍出菜单）；移除了长按直接弹删除的旧行为；内置来源不可删除 |
 | 测试 | 新增 `npm run test:smb`（SMB2 一致性，自带服务端）与 `npm run test:webdav`（WebDAV 一致性），均进 CI |
 
+## 4.5 v1.5.0 增量（品牌与上架素材）
+
+| 项 | 说明 |
+|---|---|
+| LOGO | 新设计"番茄 + 卡通小电视"标志，矢量源 `design/logo/logo.svg` + 9 个尺寸 PNG（48–1024） |
+| 鸿蒙分层图标 | 新增 foreground/background 与 `layered_image.json`，`module.json5` 的 ability icon 指向 `$media:layered_image` |
+| 智慧屏素材 | 1280×720 / 640×360 / 320×180 横版 banner |
+| 上架文档 | `docs/LOGO-AND-STORE-ASSETS.md`：素材清单、AGC 上架检查表、必须在真机截取的截图规格、隐私政策要点 |
+| 生成脚本 | `scripts/design/gen_logo.py`（含 `--verify` 字符画自检） |
+
 ## 5. 风险
 
 | 风险 | 影响 | 缓解 |

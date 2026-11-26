@@ -1,6 +1,6 @@
 {
   "name": "tomato-tv",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "private": true,
   "description": "TomatoTV - HarmonyOS NEXT file manager and media player (repo toolchain)",
   "license": "Apache-2.0",

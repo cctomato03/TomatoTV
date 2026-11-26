@@ -1,5 +1,9 @@
 # TomatoTV
 
+<p align="center">
+  <img src="design/logo/logo_256.png" width="160" alt="TomatoTV LOGO">
+</p>
+
 HarmonyOS NEXT 原生的本地与网络文件管理器，附带通用媒体播放能力。
 
 - 应用名：**TomatoTV**
@@ -68,6 +72,23 @@ TomatoTV/
 ├── test/unit/                    纯逻辑单元测试用例
 └── docs/                         开发与交付文档
 ```
+
+## LOGO 与上架素材
+
+品牌标识是"屏幕里装着一颗番茄的卡通小电视"，矢量源与全部尺寸已生成在 `design/logo/`：
+
+| 素材 | 文件 |
+|---|---|
+| 应用图标（AppGallery 主文件 1024×1024，不透明无圆角） | `design/logo/logo_1024.png` |
+| 图标各尺寸 48 / 72 / 96 / 144 / 192 / 216 / 256 / 512 | `design/logo/logo_*.png` |
+| 鸿蒙分层图标（前景 + 背景） | `design/logo/layered/`（已接入 `$media:layered_image`） |
+| 智慧屏横版 banner 1280×720 / 640×360 / 320×180 | `design/logo/banner_tv_*.png` |
+| 启动图 / 展示图 | `design/logo/splash_*.png` |
+| 矢量源 | `design/logo/logo.svg` |
+
+重新生成：`python scripts/design/gen_logo.py --verify`。
+上架素材完整清单（含必须真机截取的截图规格、隐私政策要点）见
+[`docs/LOGO-AND-STORE-ASSETS.md`](./docs/LOGO-AND-STORE-ASSETS.md)。
 
 ## 单元测试
 
