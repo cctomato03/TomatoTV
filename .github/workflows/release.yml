@@ -37,6 +37,11 @@ jobs:
       - name: 文档预览页集成测试（Chrome 无头）
         run: node scripts/test/run-viewer.mjs
 
+      - name: 协议一致性测试（SMB2 / WebDAV，自带测试服务端）
+        run: |
+          node scripts/test/run-smb-smoke.mjs test/smoke/smb.conformance.ts
+          node scripts/test/run-smb-smoke.mjs test/smoke/webdav.smoke.ts
+
   release:
     name: 构建并发布 Release
     runs-on: ubuntu-latest

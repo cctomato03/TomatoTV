@@ -36,7 +36,21 @@ const ShimTextDecoderFactory = {
   }
 };
 
+class ShimBase64Helper {
+  encodeToStringSync(src: Uint8Array): string {
+    return Buffer.from(src).toString('base64');
+  }
+
+  decodeSync(src: string): Uint8Array {
+    const buffer: Buffer = Buffer.from(src, 'base64');
+    const out: Uint8Array = new Uint8Array(buffer.length);
+    out.set(buffer);
+    return out;
+  }
+}
+
 export const util = {
   TextEncoder: ShimTextEncoder,
-  TextDecoder: ShimTextDecoderFactory
+  TextDecoder: ShimTextDecoderFactory,
+  Base64Helper: ShimBase64Helper
 };
