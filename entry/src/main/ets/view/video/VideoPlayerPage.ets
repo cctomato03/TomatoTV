@@ -1,11 +1,15 @@
 import { MediaParam, NavDefaults } from '../../navigation/AppNav';
 import { AppContainer } from '../../app/AppContainer';
 import { FileSource } from '../../model/FileSource';
+import { FileKinds } from '../../model/FileKinds';
 import { PlayableMedia } from '../../data/fs/FileSystemClient';
 import { MediaDefaults, PlaybackSpeeds, TrackOption, VideoState } from '../../media/MediaTypes';
 import { VideoEngine } from '../../media/VideoEngine';
+import { MpegTsDuration } from '../../media/MpegTsDuration';
+import { ClientByteReader } from '../../media/ClientByteReader';
 import { Fmt } from '../../utils/Format';
 import { Symbols } from '../../components/Symbols';
+import { KeyCode } from '@kit.InputKit';
 import { Logger } from '../../utils/Logger';
 
 const HIDE_DELAY_MS: number = 4000;
@@ -23,12 +27,37 @@ export struct VideoPlayerPage {
   @State dragValue: number = 0;
   @State seekHint: string = '';
   @State speedLabel: string = '1x';
+  @State pcrDurationMs: number = 0;
 
   private engine: VideoEngine = new VideoEngine();
   private controller: XComponentController = new XComponentController();
   private container: AppContainer = AppContainer.get();
   private hideTimer: number = -1;
   private opened: boolean = false;
+
+  /** 系统时长不可用（常见于 BDAV .m2ts）时用 PCR 探测结果驱动进度条（规范 §9.3） */
+  private effectiveDuration(): number {
+    return this.videoState.durationMs > 0 ? this.videoState.durationMs : this.pcrDurationMs;
+  }
+
+  private async probePcrDuration(source: FileSource): Promise<void> {
+    const extension: string = FileKinds.extensionOf(this.param.name);
+    if (extension !== 'ts' && extension !== 'm2ts' && extension !== 'mts' && extension !== 'm2v') {
+      return;
+    }
+    try {
+      const client = await this.container.repository!.clientFor(source);
+      const stat = await client.stat(this.param.path);
+      const reader: ClientByteReader = new ClientByteReader(client, this.param.path, stat.size);
+      const durationMs: number = await MpegTsDuration.probe(reader);
+      if (durationMs > 0) {
+        this.pcrDurationMs = durationMs;
+        Logger.info('VideoPlayerPage', `PCR 时长探测成功 ${Fmt.duration(durationMs)}`);
+      }
+    } catch (err) {
+      Logger.warn('VideoPlayerPage', 'PCR 时长探测失败');
+    }
+  }
 
   aboutToAppear(): void {
     this.engine.onChange((state: VideoState) => {
@@ -85,6 +114,13 @@ export struct VideoPlayerPage {
       await this.engine.open(playable, this.param.name, surfaceId);
       await this.engine.loadTracks();
       this.scheduleHide();
+      if (this.engine.durationMs() <= 0) {
+        setTimeout(() => {
+          if (this.engine.durationMs() <= 0) {
+            this.probePcrDuration(source);
+          }
+        }, 1200);
+      }
     } catch (err) {
       Logger.error('VideoPlayerPage', '打开视频失败', err as Error);
     }
@@ -154,6 +190,26 @@ export struct VideoPlayerPage {
       .width('100%')
       .height('100%')
       .backgroundColor(Color.Black)
+      .onKeyEvent((event: KeyEvent) => {
+        if (event.type !== KeyType.Down) {
+          return;
+        }
+        const code: number = event.keyCode;
+        if (code === KeyCode.KEYCODE_SPACE || code === KeyCode.KEYCODE_MEDIA_PLAY_PAUSE ||
+          code === KeyCode.KEYCODE_ENTER || code === KeyCode.KEYCODE_DPAD_CENTER) {
+          this.engine.toggle();
+          this.controlsVisible = true;
+          this.scheduleHide();
+          return;
+        }
+        if (code === KeyCode.KEYCODE_DPAD_LEFT) {
+          this.seekBy(-SEEK_STEP_MS);
+          return;
+        }
+        if (code === KeyCode.KEYCODE_DPAD_RIGHT) {
+          this.seekBy(SEEK_STEP_MS);
+        }
+      })
       .gesture(
         PanGesture({ direction: PanDirection.Horizontal })
           .onActionStart(() => {
@@ -161,24 +217,24 @@ export struct VideoPlayerPage {
             this.dragValue = this.videoState.positionMs;
           })
           .onActionUpdate((event: GestureEvent) => {
-            if (this.videoState.durationMs <= 0) {
+            if (this.effectiveDuration() <= 0) {
               return;
             }
             const ratio: number = event.offsetX / 360;
-            let target: number = this.dragValue + ratio * this.videoState.durationMs;
+            let target: number = this.dragValue + ratio * this.effectiveDuration();
             if (target < 0) {
               target = 0;
             }
-            if (target > this.videoState.durationMs) {
-              target = this.videoState.durationMs;
+            if (target > this.effectiveDuration()) {
+              target = this.effectiveDuration();
             }
-            this.seekHint = `${Fmt.duration(target)} / ${Fmt.duration(this.videoState.durationMs)}`;
+            this.seekHint = `${Fmt.duration(target)} / ${Fmt.duration(this.effectiveDuration())}`;
           })
           .onActionEnd((event: GestureEvent) => {
             this.dragging = false;
-            if (this.videoState.durationMs > 0) {
+            if (this.effectiveDuration() > 0) {
               const ratio: number = event.offsetX / 360;
-              const target: number = this.dragValue + ratio * this.videoState.durationMs;
+              const target: number = this.dragValue + ratio * this.effectiveDuration();
               this.engine.seekTo(target);
             }
             this.seekHint = '';
@@ -288,7 +344,7 @@ export struct VideoPlayerPage {
       Slider({
         value: this.videoState.positionMs,
         min: 0,
-        max: this.videoState.durationMs > 0 ? this.videoState.durationMs : 1,
+        max: this.effectiveDuration() > 0 ? this.effectiveDuration() : 1,
         step: 1
       })
         .width('100%')
@@ -304,7 +360,7 @@ export struct VideoPlayerPage {
           .fontSize(12)
           .fontColor(Color.White)
         Blank()
-        Text(Fmt.duration(this.videoState.durationMs))
+        Text(Fmt.duration(this.effectiveDuration()))
           .fontSize(12)
           .fontColor(Color.White)
       }

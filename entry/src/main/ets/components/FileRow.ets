@@ -7,6 +7,7 @@ import { Symbols } from './Symbols';
 export struct FileRow {
   entry: FileEntry = FileEntryFactory.empty();
   tvMode: boolean = false;
+  autoFocus: boolean = false;
   @State focused: boolean = false;
 
   build() {
@@ -44,6 +45,7 @@ export struct FileRow {
     .borderRadius($r('app.float.radius_small'))
     .backgroundColor(this.focused ? $r('app.color.brand_soft') : Color.Transparent)
     .focusable(true)
+    .defaultFocus(this.autoFocus)
     .border({ width: this.focused && this.tvMode ? 2 : 0, color: $r('app.color.focus_stroke') })
     .onFocus(() => {
       this.focused = true;
@@ -59,6 +61,7 @@ export struct FileRow {
 export struct FileTile {
   entry: FileEntry = FileEntryFactory.empty();
   tvMode: boolean = false;
+  autoFocus: boolean = false;
   @State focused: boolean = false;
 
   build() {
@@ -90,6 +93,7 @@ export struct FileTile {
       color: this.focused ? $r('app.color.focus_stroke') : $r('app.color.divider')
     })
     .focusable(true)
+    .defaultFocus(this.autoFocus)
     .onFocus(() => {
       this.focused = true;
     })

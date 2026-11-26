@@ -470,7 +470,11 @@ export struct BrowsePage {
       List({ space: 2, scroller: this.scroller }) {
         ForEach(this.entries, (item: FileEntry, index: number) => {
           ListItem() {
-            FileRow({ entry: item, tvMode: Layout.focusDriven(this.breakpoint, this.tvMode) })
+            FileRow({
+              entry: item,
+              tvMode: Layout.focusDriven(this.breakpoint, this.tvMode),
+              autoFocus: index === 0
+            })
           }
           .onClick(() => this.openEntry(item))
         }, (item: FileEntry) => item.path)
@@ -492,9 +496,13 @@ export struct BrowsePage {
   @Builder
   gridView() {
     Grid() {
-      ForEach(this.entries, (item: FileEntry) => {
+      ForEach(this.entries, (item: FileEntry, index: number) => {
         GridItem() {
-          FileTile({ entry: item, tvMode: Layout.focusDriven(this.breakpoint, this.tvMode) })
+          FileTile({
+            entry: item,
+            tvMode: Layout.focusDriven(this.breakpoint, this.tvMode),
+            autoFocus: index === 0
+          })
         }
         .onClick(() => this.openEntry(item))
       }, (item: FileEntry) => item.path)

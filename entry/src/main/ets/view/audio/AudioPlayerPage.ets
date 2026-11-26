@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { KeyCode } from '@kit.InputKit';
 import { AppContainer } from '../../app/AppContainer';
 import { FileEntry } from '../../model/FileEntry';
 import { PreviewKind } from '../../model/FileKinds';
@@ -297,6 +298,32 @@ export struct AudioPlayerPage {
       .width('100%')
       .height('100%')
       .backgroundColor($r('app.color.player_backdrop'))
+      .onKeyEvent((event: KeyEvent) => {
+        if (event.type !== KeyType.Down) {
+          return;
+        }
+        const code: number = event.keyCode;
+        if (code === KeyCode.KEYCODE_SPACE || code === KeyCode.KEYCODE_MEDIA_PLAY_PAUSE ||
+          code === KeyCode.KEYCODE_ENTER || code === KeyCode.KEYCODE_DPAD_CENTER) {
+          this.engine.toggle();
+          return;
+        }
+        if (code === KeyCode.KEYCODE_DPAD_LEFT) {
+          this.engine.seekTo(this.audioState.positionMs - 10000);
+          return;
+        }
+        if (code === KeyCode.KEYCODE_DPAD_RIGHT) {
+          this.engine.seekTo(this.audioState.positionMs + 10000);
+          return;
+        }
+        if (code === KeyCode.KEYCODE_DPAD_UP) {
+          this.playIndex(this.audioState.playlistIndex - 1);
+          return;
+        }
+        if (code === KeyCode.KEYCODE_DPAD_DOWN) {
+          this.playIndex(this.audioState.playlistIndex + 1);
+        }
+      })
     }
     .hideTitleBar(true)
     .backgroundColor($r('app.color.player_backdrop'))

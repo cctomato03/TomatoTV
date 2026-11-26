@@ -37,14 +37,19 @@ export class MpegTsDuration {
       if (firstPcr < 0) {
         return 0;
       }
+      let lastStart: number = -1;
       for (const window of MpegTsDuration.TAIL_WINDOWS) {
-        if (window > size) {
+        const start: number = size > window ? size - window : 0;
+        if (start === lastStart) {
           continue;
         }
-        const start: number = size - window;
-        const tail: Uint8Array = new Uint8Array(await reader.read(start, window));
+        lastStart = start;
+        const tail: Uint8Array = new Uint8Array(await reader.read(start, size - start));
         const lastPcr: number = MpegTsDuration.lastPcr(tail, packetSize);
         if (lastPcr < 0) {
+          if (start === 0) {
+            break;
+          }
           continue;
         }
         let delta: number = lastPcr - firstPcr;
@@ -54,6 +59,9 @@ export class MpegTsDuration {
         const durationMs: number = Math.floor(delta / 27000);
         if (durationMs >= MpegTsDuration.MIN_DURATION_MS && durationMs <= MpegTsDuration.MAX_DURATION_MS) {
           return durationMs;
+        }
+        if (start === 0) {
+          break;
         }
       }
       return 0;
@@ -88,9 +96,29 @@ export class MpegTsDuration {
     return hits * 100 / checked >= 90 ? hits : 0;
   }
 
+  /** 定位缓冲区内的包同步相位：尾窗读取的起点通常不是包边界 */
+  private static align(data: Uint8Array, packetSize: number): number {
+    const base: number = packetSize === 192 ? 4 : 0;
+    const limit: number = Math.min(data.length - 12, base + packetSize - 1);
+    for (let pos = base; pos <= limit; pos++) {
+      if (data[pos] !== 0x47) {
+        continue;
+      }
+      const next: number = pos + packetSize;
+      if (next + 12 <= data.length && data[next] !== 0x47) {
+        continue;
+      }
+      return pos;
+    }
+    return -1;
+  }
+
   static firstPcr(data: Uint8Array, packetSize: number): number {
-    const syncOffset: number = packetSize === 192 ? 4 : 0;
-    for (let pos = syncOffset; pos + packetSize <= data.length; pos += packetSize) {
+    const start: number = MpegTsDuration.align(data, packetSize);
+    if (start < 0) {
+      return -1;
+    }
+    for (let pos = start; pos + 12 <= data.length; pos += packetSize) {
       if (data[pos] !== 0x47) {
         continue;
       }
@@ -103,9 +131,12 @@ export class MpegTsDuration {
   }
 
   static lastPcr(data: Uint8Array, packetSize: number): number {
-    const syncOffset: number = packetSize === 192 ? 4 : 0;
+    const start: number = MpegTsDuration.align(data, packetSize);
+    if (start < 0) {
+      return -1;
+    }
     let found: number = -1;
-    for (let pos = syncOffset; pos + packetSize <= data.length; pos += packetSize) {
+    for (let pos = start; pos + 12 <= data.length; pos += packetSize) {
       if (data[pos] !== 0x47) {
         continue;
       }

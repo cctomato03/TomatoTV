@@ -159,6 +159,7 @@ export struct HomePage {
           .backgroundColor($r('app.color.brand'))
           .fontColor(Color.White)
           .focusable(true)
+          .defaultFocus(this.sources.length === 0)
           .onClick(() => this.addSource())
       }
       .width('100%')
