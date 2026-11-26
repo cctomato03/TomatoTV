@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（例如 v1.0.0）'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建并发布 Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 确认版本信息
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: 缓存 OpenHarmony SDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/ohos-sdk/12
+            ~/ohos-sdk/ohos-sdk-public.tar.gz
+          key: ohos-sdk-5.0.0-Release-71-12
+
+      - name: 缓存 hvigor 依赖
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: hvigor-5.7.0-${{ runner.os }}-${{ hashFiles('scripts/ci/install-hvigor.sh') }}
+
+      - name: 准备 OpenHarmony SDK
+        run: bash scripts/ci/prepare-sdk.sh
+
+      - name: 安装 hvigor 构建链
+        run: bash scripts/ci/install-hvigor.sh
+
+      - name: 跳过 SDK 许可交互校验
+        run: node scripts/ci/accept-sdk-license.mjs
+
+      - name: 转换工程配置为 OpenHarmony SDK 可构建
+        run: node scripts/ci/prepare-openharmony.mjs
+
+      - name: 编译 Release HAP
+        run: |
+          node node_modules/@ohos/hvigor/bin/hvigor.js \
+            --mode module -p product=default -p buildMode=release \
+            --no-daemon assembleHap
+
+      - name: 整理产物
+        id: package
+        run: |
+          set -e
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p artifacts
+          SRC_HAP=$(ls entry/build/default/outputs/default/*.hap | head -n 1)
+          HAP="artifacts/TomatoTV-${TAG}-openharmony-unsigned.hap"
+          cp "$SRC_HAP" "$HAP"
+          sha256sum "$HAP" > "artifacts/TomatoTV-${TAG}-openharmony-unsigned.hap.sha256"
+
+          git archive --format=zip --prefix="TomatoTV-${TAG}/" -o "artifacts/TomatoTV-${TAG}-source.zip" HEAD
+
+          cat > artifacts/build-info.json <<EOF
+          {
+            "app": "TomatoTV",
+            "bundleName": "com.cctomato.tv",
+            "version": "${VERSION}",
+            "tag": "${TAG}",
+            "commit": "${GITHUB_SHA}",
+            "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "sdk": "OpenHarmony SDK 5.0.0 Release (API 12)",
+            "runtimeOS": "OpenHarmony",
+            "signed": false,
+            "hapSha256": "$(sha256sum "$HAP" | cut -d' ' -f1)"
+          }
+          EOF
+
+          ls -lh artifacts
+          echo "hap=$(basename "$HAP")" >> "$GITHUB_OUTPUT"
+
+      - name: 上传构建产物（工作流附件）
+        uses: actions/upload-artifact@v4
+        with:
+          name: tomato-tv-release-${{ steps.version.outputs.tag }}
+          path: artifacts/*
+          if-no-files-found: error
+
+      - name: 创建 / 更新 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: TomatoTV ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## TomatoTV ${{ steps.version.outputs.version }}
+
+            HarmonyOS NEXT 原生的本地与网络文件管理器。
+
+            ### 下载
+
+            | 产物 | 说明 |
+            |---|---|
+            | `TomatoTV-${{ steps.version.outputs.tag }}-openharmony-unsigned.hap` | 未签名 HAP（OpenHarmony SDK 5.0.0 / API 12 构建，用于安装校验与逆向检查，真机安装需自行签名） |
+            | `TomatoTV-${{ steps.version.outputs.tag }}-source.zip` | 对应 tag 的完整源码 |
+            | `build-info.json` | 构建元数据与 SHA256 |
+
+            ### 说明
+
+            - CI 使用**公开的 OpenHarmony SDK**（华为 HarmonyOS SDK 需登录账号下载，无法在托管 Runner 上获取），
+              因此产物为 OpenHarmony 运行时配置、未签名 HAP。
+            - 若要安装到 HarmonyOS NEXT 设备，请使用 DevEco Studio 配合自己的证书/Profile 重新构建，
+              步骤见 `docs/BUILD-AND-RELEASE.md`。
+            - 本次实现范围与已知限制见 `docs/DEVIATIONS.md`。
+          files: |
+            artifacts/*.hap
+            artifacts/*.sha256
+            artifacts/*-source.zip
+            artifacts/build-info.json

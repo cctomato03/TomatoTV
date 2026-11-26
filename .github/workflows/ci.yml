@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-hap:
+    name: 编译 HarmonyOS HAP
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: 缓存 OpenHarmony SDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/ohos-sdk/12
+            ~/ohos-sdk/ohos-sdk-public.tar.gz
+          key: ohos-sdk-5.0.0-Release-71-12
+
+      - name: 缓存 hvigor 依赖
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: hvigor-5.7.0-${{ runner.os }}-${{ hashFiles('scripts/ci/install-hvigor.sh') }}
+
+      - name: 准备 OpenHarmony SDK
+        run: bash scripts/ci/prepare-sdk.sh
+
+      - name: 安装 hvigor 构建链
+        run: bash scripts/ci/install-hvigor.sh
+
+      - name: 跳过 SDK 许可交互校验
+        run: node scripts/ci/accept-sdk-license.mjs
+
+      - name: 转换工程配置为 OpenHarmony SDK 可构建
+        run: node scripts/ci/prepare-openharmony.mjs
+
+      - name: 编译 HAP
+        run: |
+          node node_modules/@ohos/hvigor/bin/hvigor.js \
+            --mode module -p product=default -p buildMode=debug \
+            --no-daemon assembleHap
+
+      - name: 校验产物
+        run: |
+          set -e
+          HAP=$(ls entry/build/default/outputs/default/*.hap | head -n 1)
+          echo "产物: $HAP"
+          ls -lh "$HAP"
+          sha256sum "$HAP" | tee hap.sha256
+
+      - name: 上传 HAP 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: tomato-tv-hap
+          path: |
+            entry/build/default/outputs/default/*.hap
+            hap.sha256
+          if-no-files-found: error
+          retention-days: 30
