@@ -59,12 +59,24 @@
 - 尚未接入播放页（当前由 AVPlayer 自身时长驱动进度条），也未用 5.78GB 级 BDAV 样本验证。
 - 后续：当 `player.duration === 0` 时回退到 PCR 探测结果；并补充真实样本回归。
 
-## 8. 智慧屏扫码填写：服务端能力就绪，二维码待接入
+## 8. 智慧屏扫码填写：已实现，二维码为自研编码器
 
 - 文档 §7.5 要求局域网 TCP HTTP 服务 + 一次性 token + 二维码。
-- 现状：局域网地址获取与服务规划保留在文档与后续实现中；首版未在 UI 暴露扫码入口（见 §11）。
-- 后续：`TCPSocketServer` 监听 8765 起空闲端口 → 表单 HTML → POST `/submit` 解析
-  `application/x-www-form-urlencoded` → 回填表单；二维码用 Canvas + 内置编码器绘制（当前 SDK 无生成 API）。
+- 已实现（v1.1.0 起）：
+  - `utils/PairingServer.ets`：`TCPSocketServer` 从 8765 起自动选空闲端口（至 8785），
+    监听 `0.0.0.0`；`GET /` 返回手机端表单 HTML，`POST /submit` 解析
+    `application/x-www-form-urlencoded`；token 错误或已失效返回 403；
+    提交成功后 token 立即置空，表单字段回显到智慧屏表单并提示"已收到手机提交，请核对后保存"；
+    关闭弹层（`onDisappear`）或页面销毁时 `stop()` 立即停止监听。
+  - `utils/LanAddress.ets`：通过 `connection.getConnectionProperties` 取本机局域网 IPv4（优先私有网段）。
+  - `utils/QrCode.ets` + `components/QrView.ets`：当前 SDK 无二维码生成 API，因此自研字节模式编码器
+    （纠错等级 M，版本 1–3，单 RS 块，固定掩码 0），用 ArkUI `Canvas` 逐格绘制。
+    该算法的等价 JS 版本已用 `jsQR` 解码器验证：v1/v2/v3 × 全部 8 种掩码全部可正确解码。
+- 限制：
+  - token 长度 10 字符（约 50 bit），使 URL 稳定落在 42 字节以内（版本 3 容量）；
+    若地址更长会退化为"仅显示 URL，请手动输入"。
+  - 二维码生成属自研实现，尚未在智慧屏真机上用手机实扫验证。
+  - 入口仅在"强制大屏布局/智慧屏 + 新增存储"时显示（符合文档限定）。
 
 ## 9. 播放器轨道切换
 
@@ -97,7 +109,7 @@
 | §7.2 首页 | `view/home/HomePage.ets` | ✅ |
 | §7.3 浏览页 | `view/browse/BrowsePage.ets` | ✅ |
 | §7.4 添加/编辑存储 | `view/source/SourceEditPage.ets` | ✅ |
-| §7.5 智慧屏扫码 | 见本文 §8 | ⚠️ 部分 |
+| §7.5 智慧屏扫码 | `utils/PairingServer.ets` + `utils/QrCode.ets` + `components/QrView.ets` | ✅ |
 | §7.6 文本预览 | `view/preview/TextPreviewPage.ets` | ✅ |
 | §7.7 / §7.8 PDF、Office | `view/preview/DocPreviewPage.ets` | ⚠️ 降级 |
 | §7.9 图片查看器 | `view/image/ImageViewerPage.ets` | ✅ |

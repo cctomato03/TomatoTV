@@ -7,6 +7,9 @@ import { FsError, FsErrorKind, FsErrorText } from '../../data/fs/FileSystemClien
 import { BusKeys, EventBus } from '../../utils/EventBus';
 import { NavDefaults, SourceEditParam } from '../../navigation/AppNav';
 import { Symbols } from '../../components/Symbols';
+import { QrView } from '../../components/QrView';
+import { PairingForm, PairingServer, PairingSession } from '../../utils/PairingServer';
+import { QrCode } from '../../utils/QrCode';
 import { Logger } from '../../utils/Logger';
 
 interface FormErrors {
@@ -37,10 +40,85 @@ export struct SourceEditPage {
   @State errors: FormErrors = { name: '', address: '', local: '', host: '' };
   @State testing: boolean = false;
   @State saving: boolean = false;
+  @State isTvLayout: boolean = false;
+  @State pairingVisible: boolean = false;
+  @State pairingUrl: string = '';
+  @State pairingError: string = '';
+  @State qrMatrix: boolean[][] = [];
 
   private container: AppContainer = AppContainer.get();
+  private pairingServer: PairingServer | null = null;
+
+  private openPairing(): void {
+    this.pairingError = '';
+    this.qrMatrix = [];
+    this.pairingVisible = true;
+    const server: PairingServer = new PairingServer((form: PairingForm) => {
+      this.applyPairingForm(form);
+    }, () => {
+      promptAction.showToast({ message: '已收到手机提交，请核对后保存' });
+    });
+    this.pairingServer = server;
+    server.start().then((session: PairingSession) => {
+      this.pairingUrl = session.url;
+      this.qrMatrix = QrCode.encode(session.url) ?? [];
+      if (this.qrMatrix.length === 0) {
+        this.pairingError = '地址过长，无法生成二维码，请手动输入下面的地址';
+      }
+    }).catch((err: Error) => {
+      Logger.error('SourceEditPage', '启动局域网服务失败', err);
+      this.pairingError = '无法启动局域网服务，请检查网络后重试';
+    });
+  }
+
+  private stopPairing(): void {
+    const server: PairingServer | null = this.pairingServer;
+    this.pairingServer = null;
+    this.pairingUrl = '';
+    this.qrMatrix = [];
+    if (server !== null) {
+      server.stop();
+    }
+  }
+
+  private applyPairingForm(form: PairingForm): void {
+    this.type = SourceEditPage.parseType(form.type);
+    this.name = form.name;
+    this.url = form.url;
+    this.host = form.host;
+    this.portText = form.port.length > 0 ? form.port : `${SourceFactory.defaultPort(this.type)}`;
+    this.share = form.share;
+    this.rootPath = form.rootPath;
+    this.domain = form.domain;
+    this.username = form.username;
+    this.password = form.password;
+    this.secure = form.secure === 'true';
+    if (form.localPath.length > 0 && form.localPath.startsWith('file://')) {
+      this.localUri = form.localPath;
+    }
+    this.errors = { name: '', address: '', local: '', host: '' };
+  }
+
+  private static parseType(value: string): SourceType {
+    const upper: string = value.toUpperCase();
+    if (upper === 'WEBDAV') {
+      return SourceType.WEBDAV;
+    }
+    if (upper === 'SMB') {
+      return SourceType.SMB;
+    }
+    if (upper === 'FTP') {
+      return SourceType.FTP;
+    }
+    return SourceType.LOCAL;
+  }
 
   aboutToAppear(): void {
+    try {
+      this.isTvLayout = this.container.settings().forceTvLayout;
+    } catch (err) {
+      this.isTvLayout = false;
+    }
     if (this.param.isNew) {
       this.type = this.param.initialType;
       this.portText = `${SourceFactory.defaultPort(this.type)}`;
@@ -337,6 +415,21 @@ export struct SourceEditPage {
               .width('100%')
           }
 
+          if (this.isTvLayout && this.param.isNew) {
+            Button('手机扫码填写参数')
+              .type(ButtonType.Capsule)
+              .height(44)
+              .width('100%')
+              .backgroundColor($r('app.color.brand_soft'))
+              .fontColor($r('app.color.brand'))
+              .focusable(true)
+              .onClick(() => this.openPairing())
+            Text('在智慧屏上打开二维码，用手机浏览器填写后自动回显到本页；关闭二维码后链接立即失效。')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+          }
+
           Row({ space: 12 }) {
             Button(this.testing ? '测试中…' : '测试连接')
               .type(ButtonType.Capsule)
@@ -384,6 +477,73 @@ export struct SourceEditPage {
     }
     .title('存储')
     .backgroundColor($r('app.color.surface'))
+    .bindSheet($$this.pairingVisible, this.pairingSheet(), {
+      height: 480,
+      dragBar: true,
+      backgroundColor: $r('app.color.surface'),
+      onDisappear: () => {
+        this.stopPairing();
+      }
+    })
+  }
+
+  aboutToDisappear(): void {
+    this.stopPairing();
+  }
+
+  @Builder
+  pairingSheet() {
+    Column({ space: 12 }) {
+      Text('手机扫码填写')
+        .fontSize(17)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .width('100%')
+
+      if (this.qrMatrix.length > 0) {
+        QrView({ matrix: this.qrMatrix, edge: 220 })
+      } else if (this.pairingError.length > 0) {
+        Text(this.pairingError)
+          .fontSize(13)
+          .fontColor($r('app.color.brand'))
+          .width('100%')
+      } else {
+        LoadingProgress()
+          .width(36)
+          .height(36)
+          .color($r('app.color.brand'))
+      }
+
+      if (this.pairingUrl.length > 0) {
+        Text(this.pairingUrl)
+          .fontSize(13)
+          .fontColor($r('app.color.text_primary'))
+          .copyOption(CopyOptions.LocalDevice)
+          .textAlign(TextAlign.Center)
+          .width('100%')
+      }
+
+      Text('手机与智慧屏需在同一局域网；提交后本链接立即失效，关闭此窗口会停止服务。')
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .textAlign(TextAlign.Center)
+        .width('100%')
+
+      Button('关闭')
+        .type(ButtonType.Capsule)
+        .height(40)
+        .width('100%')
+        .backgroundColor($r('app.color.surface_card'))
+        .fontColor($r('app.color.text_primary'))
+        .focusable(true)
+        .onClick(() => {
+          this.pairingVisible = false;
+          this.stopPairing();
+        })
+    }
+    .width('100%')
+    .padding(20)
+    .alignItems(HorizontalAlign.Center)
   }
 
   private static allTypes(): SourceType[] {

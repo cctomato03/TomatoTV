@@ -29,7 +29,7 @@ HarmonyOS NEXT 原生的本地与网络文件管理器，附带通用媒体播�
 | PDF / Office 预览 | ⚠️ 走系统“打开方式”，应用内渲染待后续版本 |
 | M2TS / TS PCR 时长探测 | ✅ 算法实现，待真机验证 |
 | 缓存管理（统计、清理、LRU） | ✅ |
-| 智慧屏手机扫码填写参数 | ⚠️ 服务端已实现，二维码待后续接入 |
+| 智慧屏手机扫码填写参数（局域网 HTTP 服务 + Canvas 二维码） | ✅ |
 
 完整的能力清单、偏差与已知限制见 [`docs/DEVIATIONS.md`](./docs/DEVIATIONS.md)，
 阶段交付说明见 [`docs/STAGE-REPORT.md`](./docs/STAGE-REPORT.md)。
