@@ -86,8 +86,7 @@ export struct VideoPlayerPage {
     try {
       const playable: PlayableMedia = await this.container.repository!.playable(source, entry, false);
       this.usedStream = false;
-      const surfaceId: string = this.controller.getXComponentSurfaceId();
-      await this.engine.open(playable, this.param.name, surfaceId);
+      await this.engine.open(playable, this.param.name, () => this.controller.getXComponentSurfaceId());
     } catch (err) {
       Logger.error('VideoPlayerPage', '回退缓存播放失败', err as Error);
     }
@@ -119,7 +118,7 @@ export struct VideoPlayerPage {
     }
   }
 
-  private async open(surfaceId: string): Promise<void> {
+  private async open(): Promise<void> {
     if (this.opened) {
       return;
     }
@@ -142,7 +141,8 @@ export struct VideoPlayerPage {
       this.lastEntry = entry;
       const playable: PlayableMedia = await this.container.repository!.playable(source, entry);
       this.usedStream = playable.url.length > 0;
-      await this.engine.open(playable, this.param.name, surfaceId);
+      Logger.info('VideoPlayerPage', `播放来源: ${this.usedStream ? 'stream ' + playable.url : 'fd ' + playable.fd}`);
+      await this.engine.open(playable, this.param.name, () => this.controller.getXComponentSurfaceId());
       await this.engine.loadTracks();
       this.scheduleHide();
       if (this.engine.durationMs() <= 0) {
@@ -177,8 +177,12 @@ export struct VideoPlayerPage {
           .width('100%')
           .height('100%')
           .onLoad(() => {
-            const surfaceId: string = this.controller.getXComponentSurfaceId();
-            this.open(surfaceId);
+            if (this.opened) {
+              // 画面组件被重建：把新的 SurfaceId 重新交给播放器
+              this.engine.reattachSurface();
+              return;
+            }
+            this.open();
           })
           .onClick(() => this.toggleControls())
 

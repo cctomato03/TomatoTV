@@ -27,12 +27,20 @@ export struct AudioPlayerPage {
   private engine: AudioEngine = new AudioEngine();
   private container: AppContainer = AppContainer.get();
   private loadToken: number = 0;
+  private usedStream: boolean = false;
+  private retriedCache: boolean = false;
   private playlistEntries: FileEntry[] = [];
 
   aboutToAppear(): void {
     this.engine.onChange((state: AudioState) => {
       this.audioState = state;
       this.speedLabel = PlaybackSpeeds.label(state.speed);
+      // 流式播放失败（部分编码/服务端不支持 Range 流）→ 自动改用整文件缓存再播一次
+      if (state.lyricsError !== null && this.usedStream && !this.retriedCache) {
+        this.retriedCache = true;
+        Logger.warn('AudioPlayerPage', '流式播放失败，回退为本地缓存播放');
+        this.playIndex(this.audioState.playlistIndex);
+      }
     });
     this.engine.bindSessionCommands(() => {
       this.playIndex(this.audioState.playlistIndex + 1);
@@ -108,6 +116,7 @@ export struct AudioPlayerPage {
     this.loadToken = token;
     this.engine.resetForTrack(target);
     const item: PlaylistItem = playlist[target];
+    const allowStream: boolean = !this.retriedCache;
     try {
       const playable: PlayableMedia = await this.container.repository!.playable(source, {
         name: item.name,
@@ -117,7 +126,9 @@ export struct AudioPlayerPage {
         lastModified: 0,
         mimeType: '',
         kind: PreviewKind.AUDIO
-      });
+      }, allowStream);
+      this.usedStream = playable.url.length > 0;
+      Logger.info('AudioPlayerPage', `播放来源: ${this.usedStream ? 'stream ' + playable.url : 'fd ' + playable.fd}`);
       if (token !== this.loadToken) {
         return;
       }
