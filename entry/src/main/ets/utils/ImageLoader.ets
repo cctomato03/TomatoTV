@@ -1,4 +1,7 @@
 import { image } from '@kit.ImageKit';
+import { FileEntry } from '../model/FileEntry';
+import { FileSource, SourceType } from '../model/FileSource';
+import { FileRepository } from '../data/repo/FileRepository';
 import { Logger } from './Logger';
 
 export interface LoadedImage {
@@ -88,6 +91,33 @@ export class ImageLoader {
           Logger.warn('ImageLoader', '释放 ImageSource 失败');
         }
       }
+    }
+  }
+
+  /**
+   * 统一入口：把"某个来源里的某个文件"解码成 PixelMap。
+   * 远程来源先落本地缓存（复用 RemoteCache），再按路径解码；失败则读字节再解码。
+   */
+  static async loadEntry(repository: FileRepository, source: FileSource, entry: FileEntry,
+    maxEdge: number, maxBytes: number): Promise<image.PixelMap | null> {
+    try {
+      let localPath: string = entry.path;
+      if (source.type !== SourceType.LOCAL) {
+        localPath = await repository.materializeToPath(source, entry);
+      }
+      const byPath: LoadedImage = await ImageLoader.fromPath(localPath, maxEdge);
+      if (byPath.pixelMap !== null) {
+        return byPath.pixelMap;
+      }
+      const bytes: ArrayBuffer = await repository.readDocument(source, entry, maxBytes);
+      if (bytes.byteLength === 0) {
+        return null;
+      }
+      const byBytes: LoadedImage = await ImageLoader.fromBytes(bytes, maxEdge);
+      return byBytes.pixelMap;
+    } catch (err) {
+      Logger.error('ImageLoader', '解码图片失败', err as Error);
+      return null;
     }
   }
 
