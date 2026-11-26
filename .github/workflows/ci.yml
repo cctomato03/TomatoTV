@@ -62,7 +62,7 @@ jobs:
       - name: 缓存 hvigor 依赖
         uses: actions/cache@v4
         with:
-          path: node_modules
+          path: ~/ohos-build-tools/node_modules
           key: hvigor-5.7.0-${{ runner.os }}-${{ hashFiles('scripts/ci/install-hvigor.sh') }}
 
       - name: 准备 OpenHarmony SDK
