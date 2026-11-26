@@ -91,6 +91,36 @@ export struct HomePage {
     });
   }
 
+  /** 左滑露出的操作区：编辑 / 删除（内置来源不可删除） */
+  @Builder
+  swipeActions(source: FileSource) {
+    Row({ space: 10 }) {
+      Button('编辑')
+        .type(ButtonType.Capsule)
+        .height('72%')
+        .padding({ left: 18, right: 18 })
+        .fontSize(14)
+        .fontColor(Color.White)
+        .backgroundColor($r('app.color.brand'))
+        .onClick(() => this.editSource(source))
+        .accessibilityText('编辑存储')
+      if (!source.builtIn) {
+        Button('删除')
+          .type(ButtonType.Capsule)
+          .height('72%')
+          .padding({ left: 18, right: 18 })
+          .fontSize(14)
+          .fontColor($r('app.color.brand'))
+          .backgroundColor($r('app.color.surface_card'))
+          .onClick(() => this.confirmDelete(source))
+          .accessibilityText('删除存储')
+      }
+    }
+    .height('100%')
+    .padding({ left: 12, right: 16 })
+    .alignItems(VerticalAlign.Center)
+  }
+
   build() {
     Column() {
       Row({ space: 8 }) {
@@ -143,6 +173,7 @@ export struct HomePage {
               })
             }
             .padding({ left: 16, right: 16 })
+            .swipeAction({ end: this.swipeActions(item), edgeEffect: SwipeEdgeEffect.Spring })
           }, (item: FileSource) => item.id)
         }
         .width('100%')

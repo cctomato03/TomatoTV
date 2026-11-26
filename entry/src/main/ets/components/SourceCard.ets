@@ -59,17 +59,6 @@ export struct SourceCard {
         Text('内置')
           .fontSize(11)
           .fontColor($r('app.color.text_tertiary'))
-      } else {
-        Button('编辑')
-          .type(ButtonType.Capsule)
-          .height(30)
-          .padding({ left: 14, right: 14 })
-          .fontSize(12)
-          .backgroundColor($r('app.color.brand_soft'))
-          .fontColor($r('app.color.brand'))
-          .focusable(true)
-          .onClick(() => this.onEdit(this.source))
-          .accessibilityText(`编辑存储 ${this.source.name}`)
       }
 
       SymbolGlyph(Symbols.forward())

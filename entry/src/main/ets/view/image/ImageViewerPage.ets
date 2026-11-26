@@ -2,8 +2,8 @@ import { image } from '@kit.ImageKit';
 import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { AppContainer } from '../../app/AppContainer';
-import { FileEntry } from '../../model/FileEntry';
-import { FileSource, SourceFactory, SourceUrl, SourceType } from '../../model/FileSource';
+import { FileEntry, FileSorter } from '../../model/FileEntry';
+import { FileSource, SourceFactory, SourceType } from '../../model/FileSource';
 import { MediaParam, NavDefaults } from '../../navigation/AppNav';
 import { SafeLink } from '../../utils/SafeLink';
 import { Fmt } from '../../utils/Format';
@@ -89,7 +89,9 @@ export struct ImageViewerPage {
     try {
       const parent: string = ImageViewerPage.parentOf(this.param.path);
       const entries: FileEntry[] = await this.container.repository!.list(source, parent);
-      for (const entry of entries) {
+      // 与浏览页使用同样的排序，保证左右滑动的顺序与列表一致
+      const sorted: FileEntry[] = FileSorter.sort(entries, this.container.settings().sortMode);
+      for (const entry of sorted) {
         if (!entry.isDirectory && entry.kind === this.param.kind) {
           if (entry.path === this.param.path) {
             current = images.length;
@@ -236,16 +238,22 @@ export struct ImageViewerPage {
           pending.getImageProperty(image.PropertyKey.COPYRIGHT)
         ];
         Promise.all(properties).then((values: string[]) => {
-          const exifText: string = `${values[1] === undefined ? '' : values[1]} ` +
-            `${values[2] === undefined ? '' : values[2]}`;
+          const author: string = values[1] === undefined ? '' : values[1];
+          const copyright: string = values[2] === undefined ? '' : values[2];
+          // 链接只来自"作者"字段（这类信息通常是打开某个 App 的链接），
+          // 没有的话再看版权字段；都不会回退到图片自身的 URL。
+          let link: string = SafeLink.firstUrlAnyScheme(author);
+          if (link.length === 0) {
+            link = SafeLink.firstUrlAnyScheme(copyright);
+          }
           this.info = {
             width: this.info.width,
             height: this.info.height,
             format: this.info.format,
             takenAt: values[0] === undefined ? '' : values[0],
-            author: values[1] === undefined ? '' : values[1],
-            copyright: values[2] === undefined ? '' : values[2],
-            link: SafeLink.firstUrlAnyScheme(exifText)
+            author: author,
+            copyright: copyright,
+            link: link
           };
           try {
             pending.release();
@@ -268,36 +276,12 @@ export struct ImageViewerPage {
     });
   }
 
-  /** 右下角"链接"按钮的目标：EXIF 链接优先，否则是图片在来源上的 URL */
+  /**
+   * 右下角"链接"按钮的目标：只取图片元数据里"作者"字段中的链接
+   * （通常是打开某个 App 的 URL），不再是图片自身的地址。
+   */
   private linkTarget(): string {
-    if (this.info.link.length > 0) {
-      return this.info.link;
-    }
-    const source: FileSource | null = this.container.findSource(this.param.sourceId);
-    if (source === null) {
-      return '';
-    }
-    const path: string = this.paths.length > 0 ? this.paths[this.index] : this.param.path;
-    const suffix: string = path.startsWith('/') ? path : `/${path}`;
-    switch (source.type) {
-      case SourceType.WEBDAV: {
-        let base: string = source.url;
-        while (base.endsWith('/')) {
-          base = base.substring(0, base.length - 1);
-        }
-        const encoded: string = SourceUrl.encodePath(path);
-        return encoded.length === 0 ? base : `${base}/${encoded}`;
-      }
-      case SourceType.FTP: {
-        const scheme: string = source.secure ? 'ftps' : 'ftp';
-        return `${scheme}://${source.host}:${source.port}${suffix}`;
-      }
-      case SourceType.SMB: {
-        return `smb://${source.host}/${source.share}${suffix}`;
-      }
-      default:
-        return '';
-    }
+    return this.info.link;
   }
 
   private async openLink(): Promise<void> {
