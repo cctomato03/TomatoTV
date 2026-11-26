@@ -159,6 +159,24 @@
 | 图片链接按钮不显示 | 按钮改为**常显**，点击时再判断作者信息是否有链接，没有则提示；点击时会重新读一次元数据 |
 | 本地存储没有权限 | 启动时为每个本机来源调用 `fileShare.activatePermission()`（持久化授权在重启后需要重新激活）；权限不足时错误页提供「重新选择目录」入口并说明原因 |
 
+## 4.11 v1.8.1 增量（第七轮真机反馈）
+
+| 问题 | 处理 |
+|---|---|
+| 远程视频仍然只有声音没有画面 | 根因是 SurfaceId 在设置 url 之前绑定，且 initialized 时被跳过；改为在 initialized 状态下绑定 Surface 后再 prepare，取不到 id 时 100ms 重试，确保起播前完成绑定 |
+| 打开视频应自动横屏 | 视频页进入时 `setPreferredOrientation(LANDSCAPE)`，退出恢复 `UNSPECIFIED`；智慧屏/2in1 跳过 |
+| 视频与音频应分开处理 | 现有架构已分离：视频 `VideoPlayerPage + VideoEngine`（XComponent Surface），音频 `AudioPlayerPage + AudioEngine`（AVSession 后台），各自独立播放器实例与页面路由 |
+| 画面黑屏排查手段 | 新增 `videoSizeChange` 与 `startRenderFrame` 日志，可区分“Surface 未绑定”“取流失败”“视频轨编码不支持” |
+
+## 4.12 v1.8.2 增量（第八轮真机反馈）
+
+| 问题 | 处理 |
+|---|---|
+| 视频画面比例不对 | AVPlayer 默认 `VIDEO_SCALE_TYPE_FIT` 会拉伸铺满窗口；改为 `VIDEO_SCALE_TYPE_SCALED_ASPECT` 保持原始比例并留黑边。真机截图逐像素验证：16:9 视频在 2760×1256 窗口中左右各 351px 黑边，有效画面 2058×1158 |
+| 中间三个按钮点击没反应 | 原因是 `centerBar` 与底部进度条同处 Stack 底部、被后绘制的 `bottomBar` 覆盖；去掉中间悬浮按钮，改为唯一的底部工具栏 |
+| 倍速按钮统一到底部工具栏 | 工具栏顺序：进度条 → 时间 → [快退 / 播放暂停 / 快进 / 倍速 / 音轨 / 字幕]，六个按钮统一 78×38，工具栏顶部就是进度条 |
+| 需要音轨与内嵌字幕选择 | `VideoEngine` 在 prepared 后读取 `getTrackDescription()`，音轨/字幕菜单显示编码与语言，选择调用 `selectTrack()`、「关闭字幕」调用 `deselectTrack()`，并用 `trackChange` 同步选中态。真机验证 4 条音轨与 2 条内嵌字幕均可切换 |
+
 ## 5. 风险
 
 | 风险 | 影响 | 缓解 |

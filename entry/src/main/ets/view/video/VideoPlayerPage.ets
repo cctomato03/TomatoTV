@@ -11,10 +11,14 @@ import { ClientByteReader } from '../../media/ClientByteReader';
 import { Fmt } from '../../utils/Format';
 import { Symbols } from '../../components/Symbols';
 import { KeyCode } from '@kit.InputKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
+import { window } from '@kit.ArkUI';
 import { Logger } from '../../utils/Logger';
 
 const HIDE_DELAY_MS: number = 4000;
 const SEEK_STEP_MS: number = 10000;
+const TOOL_WIDTH: number = 78;
+const TOOL_HEIGHT: number = 38;
 
 /** 视频播放页（规范 §7.10）：XComponent 全屏画面 + 手势 seek + 倍速/音轨/字幕 */
 @Component
@@ -36,6 +40,7 @@ export struct VideoPlayerPage {
   private hideTimer: number = -1;
   private opened: boolean = false;
   private usedStream: boolean = false;
+  private landscapeRequested: boolean = false;
 
   /** 系统时长不可用（常见于 BDAV .m2ts）时用 PCR 探测结果驱动进度条（规范 §9.3） */
   private effectiveDuration(): number {
@@ -69,12 +74,53 @@ export struct VideoPlayerPage {
         Logger.warn('VideoPlayerPage', `播放失败: ${state.error}`);
       }
     });
+    this.enterLandscape();
   }
 
 
   aboutToDisappear(): void {
     this.clearHideTimer();
     this.engine.release();
+    this.exitLandscape();
+  }
+
+  /** 进入视频页自动横屏（手机/平板）；智慧屏与 2in1 本身是宽屏，不做旋转 */
+  private async enterLandscape(): Promise<void> {
+    const type: string = deviceInfo.deviceType;
+    if (type === 'tv' || type === '2in1') {
+      return;
+    }
+    const stage: window.WindowStage | null = this.container.windowStage();
+    if (stage === null) {
+      return;
+    }
+    this.landscapeRequested = true;
+    try {
+      const win: window.Window = stage.getMainWindowSync();
+      await win.setPreferredOrientation(window.Orientation.LANDSCAPE);
+      Logger.info('VideoPlayerPage', '已切换为横屏');
+    } catch (err) {
+      Logger.warn('VideoPlayerPage', '切换横屏失败');
+    }
+  }
+
+  /** 退出视频页恢复默认方向，避免上一页停留在横屏 */
+  private async exitLandscape(): Promise<void> {
+    if (!this.landscapeRequested) {
+      return;
+    }
+    this.landscapeRequested = false;
+    const stage: window.WindowStage | null = this.container.windowStage();
+    if (stage === null) {
+      return;
+    }
+    try {
+      const win: window.Window = stage.getMainWindowSync();
+      await win.setPreferredOrientation(window.Orientation.UNSPECIFIED);
+      Logger.info('VideoPlayerPage', '已恢复默认屏幕方向');
+    } catch (err) {
+      Logger.warn('VideoPlayerPage', '恢复屏幕方向失败');
+    }
   }
 
   private clearHideTimer(): void {
@@ -121,7 +167,6 @@ export struct VideoPlayerPage {
       this.usedStream = playable.url.length > 0;
       Logger.info('VideoPlayerPage', `播放来源: ${this.usedStream ? 'stream ' + playable.url : 'fd ' + playable.fd}`);
       await this.engine.open(playable, this.param.name, () => this.controller.getXComponentSurfaceId());
-      await this.engine.loadTracks();
       this.scheduleHide();
       if (this.engine.durationMs() <= 0) {
         setTimeout(() => {
@@ -196,7 +241,6 @@ export struct VideoPlayerPage {
 
         if (this.controlsVisible) {
           this.topBar()
-          this.centerBar()
           this.bottomBar()
         }
       }
@@ -283,30 +327,6 @@ export struct VideoPlayerPage {
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
-
-      Button(this.speedLabel)
-        .height(32)
-        .backgroundColor($r('app.color.player_scrim'))
-        .fontColor(Color.White)
-        .fontSize(13)
-        .bindMenu(this.speedMenu())
-
-      if (this.videoState.audioTracks.length > 1) {
-        Button('音轨')
-          .height(32)
-          .backgroundColor($r('app.color.player_scrim'))
-          .fontColor(Color.White)
-          .fontSize(13)
-          .bindMenu(this.audioMenu())
-      }
-      if (this.videoState.subtitleTracks.length > 0) {
-        Button('字幕')
-          .height(32)
-          .backgroundColor($r('app.color.player_scrim'))
-          .fontColor(Color.White)
-          .fontSize(13)
-          .bindMenu(this.subtitleMenu())
-      }
     }
     .width('100%')
     .padding(12)
@@ -314,80 +334,125 @@ export struct VideoPlayerPage {
   }
 
   @Builder
-  centerBar() {
-    Row({ space: 32 }) {
-      Button({ type: ButtonType.Circle }) {
-        SymbolGlyph(Symbols.previous()).fontSize(24).fontColor([Color.White])
-      }
-      .width(52)
-      .height(52)
-      .backgroundColor($r('app.color.player_scrim'))
-      .onClick(() => this.seekBy(-SEEK_STEP_MS))
-      .accessibilityText('快退 10 秒')
-
-      Button({ type: ButtonType.Circle }) {
-        SymbolGlyph(this.videoState.playing ? Symbols.pause() : Symbols.play())
-          .fontSize(28)
-          .fontColor([Color.White])
-      }
-      .width(64)
-      .height(64)
-      .backgroundColor($r('app.color.brand'))
-      .onClick(() => {
-        this.engine.toggle();
-        this.scheduleHide();
-      })
-
-      Button({ type: ButtonType.Circle }) {
-        SymbolGlyph(Symbols.next()).fontSize(24).fontColor([Color.White])
-      }
-      .width(52)
-      .height(52)
-      .backgroundColor($r('app.color.player_scrim'))
-      .onClick(() => this.seekBy(SEEK_STEP_MS))
-      .accessibilityText('快进 10 秒')
-    }
-    .justifyContent(FlexAlign.Center)
-    .width('100%')
-  }
-
-  @Builder
   bottomBar() {
     Column({ space: 6 }) {
-      Slider({
-        value: this.videoState.positionMs,
-        min: 0,
-        max: this.effectiveDuration() > 0 ? this.effectiveDuration() : 1,
-        step: 1
-      })
-        .width('100%')
-        .selectedColor($r('app.color.brand'))
-        .onChange((value: number, mode: SliderChangeMode) => {
-          if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
-            this.engine.seekTo(value);
-            this.scheduleHide();
-          }
-        })
-      Row() {
+      Row({ space: 8 }) {
         Text(Fmt.duration(this.videoState.positionMs))
           .fontSize(12)
           .fontColor(Color.White)
-        Blank()
+          .width(56)
+        Slider({
+          value: this.videoState.positionMs,
+          min: 0,
+          max: this.effectiveDuration() > 0 ? this.effectiveDuration() : 1,
+          step: 1
+        })
+          .layoutWeight(1)
+          .height(32)
+          .selectedColor($r('app.color.brand'))
+          .onChange((value: number, mode: SliderChangeMode) => {
+            if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+              this.engine.seekTo(value);
+              this.scheduleHide();
+            }
+          })
         Text(Fmt.duration(this.effectiveDuration()))
           .fontSize(12)
           .fontColor(Color.White)
+          .width(64)
+          .textAlign(TextAlign.End)
       }
       .width('100%')
+
+      Row({ space: 8 }) {
+        Button('快退')
+          .type(ButtonType.Normal)
+          .borderRadius(8)
+          .width(TOOL_WIDTH)
+          .height(TOOL_HEIGHT)
+          .fontSize(13)
+          .fontColor(Color.White)
+          .backgroundColor($r('app.color.player_scrim'))
+          .onClick(() => this.seekBy(-SEEK_STEP_MS))
+          .accessibilityText('快退 10 秒')
+
+        Button(this.videoState.playing ? '暂停' : '播放')
+          .type(ButtonType.Normal)
+          .borderRadius(8)
+          .width(TOOL_WIDTH)
+          .height(TOOL_HEIGHT)
+          .fontSize(13)
+          .fontColor(Color.White)
+          .backgroundColor($r('app.color.brand'))
+          .onClick(() => {
+            this.engine.toggle();
+            this.scheduleHide();
+          })
+
+        Button('快进')
+          .type(ButtonType.Normal)
+          .borderRadius(8)
+          .width(TOOL_WIDTH)
+          .height(TOOL_HEIGHT)
+          .fontSize(13)
+          .fontColor(Color.White)
+          .backgroundColor($r('app.color.player_scrim'))
+          .onClick(() => this.seekBy(SEEK_STEP_MS))
+          .accessibilityText('快进 10 秒')
+
+        Button(this.speedLabel)
+          .type(ButtonType.Normal)
+          .borderRadius(8)
+          .width(TOOL_WIDTH)
+          .height(TOOL_HEIGHT)
+          .fontSize(13)
+          .fontColor(Color.White)
+          .backgroundColor($r('app.color.player_scrim'))
+          .bindMenu(this.speedMenu(), {
+            onAppear: () => this.clearHideTimer(),
+            onDisappear: () => this.scheduleHide()
+          })
+
+        Button('音轨')
+          .type(ButtonType.Normal)
+          .borderRadius(8)
+          .width(TOOL_WIDTH)
+          .height(TOOL_HEIGHT)
+          .fontSize(13)
+          .fontColor(Color.White)
+          .backgroundColor($r('app.color.player_scrim'))
+          .bindMenu(this.audioMenu(), {
+            onAppear: () => this.clearHideTimer(),
+            onDisappear: () => this.scheduleHide()
+          })
+
+        Button('字幕')
+          .type(ButtonType.Normal)
+          .borderRadius(8)
+          .width(TOOL_WIDTH)
+          .height(TOOL_HEIGHT)
+          .fontSize(13)
+          .fontColor(Color.White)
+          .backgroundColor($r('app.color.player_scrim'))
+          .bindMenu(this.subtitleMenu(), {
+            onAppear: () => this.clearHideTimer(),
+            onDisappear: () => this.scheduleHide()
+          })
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.SpaceEvenly)
     }
     .width('100%')
-    .padding({ left: 16, right: 16, bottom: 16 })
+    .padding({ left: 16, right: 16, top: 8, bottom: 12 })
+    .backgroundColor($r('app.color.player_scrim'))
   }
 
   @Builder
   speedMenu() {
     Menu() {
       ForEach(PlaybackSpeeds.LIST, (speed: number) => {
-        MenuItem({ content: PlaybackSpeeds.label(speed) })
+        MenuItem({ content: speed === this.videoState.speed ? `✓ ${PlaybackSpeeds.label(speed)}` :
+          PlaybackSpeeds.label(speed) })
           .onClick(() => {
             this.engine.setSpeed(speed);
             this.scheduleHide();
@@ -399,9 +464,18 @@ export struct VideoPlayerPage {
   @Builder
   audioMenu() {
     Menu() {
+      if (this.videoState.audioTracks.length === 0) {
+        MenuItem({ content: '没有可切换的音轨' })
+          .enabled(false)
+      }
       ForEach(this.videoState.audioTracks, (track: TrackOption) => {
-        MenuItem({ content: track.label })
-          .onClick(() => this.engine.selectTrack(track.index))
+        MenuItem({
+          content: track.index === this.videoState.selectedAudioId ? `✓ ${track.label}` : track.label
+        })
+          .onClick(() => {
+            this.engine.selectTrack(track.index);
+            this.scheduleHide();
+          })
       }, (track: TrackOption) => `a${track.index}`)
     }
   }
@@ -409,11 +483,23 @@ export struct VideoPlayerPage {
   @Builder
   subtitleMenu() {
     Menu() {
-      MenuItem({ content: '关闭字幕' })
-        .onClick(() => this.engine.selectTrack(-1))
+      MenuItem({ content: this.videoState.selectedSubtitleId < 0 ? '✓ 关闭字幕' : '关闭字幕' })
+        .onClick(() => {
+          this.engine.selectTrack(-1);
+          this.scheduleHide();
+        })
+      if (this.videoState.subtitleTracks.length === 0) {
+        MenuItem({ content: '没有字幕轨' })
+          .enabled(false)
+      }
       ForEach(this.videoState.subtitleTracks, (track: TrackOption) => {
-        MenuItem({ content: track.label })
-          .onClick(() => this.engine.selectTrack(track.index))
+        MenuItem({
+          content: track.index === this.videoState.selectedSubtitleId ? `✓ ${track.label}` : track.label
+        })
+          .onClick(() => {
+            this.engine.selectTrack(track.index);
+            this.scheduleHide();
+          })
       }, (track: TrackOption) => `s${track.index}`)
     }
   }

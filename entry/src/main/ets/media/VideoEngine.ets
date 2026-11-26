@@ -16,6 +16,8 @@ export class VideoEngine {
   };
   private surfaceProvider: SurfaceProvider = () => '';
   private surfaceAttached: boolean = false;
+  private surfaceTimer: number = -1;
+  private tracksLoaded: boolean = false;
   /** 是否已经开始出画面/出声：已经开始后出现的错误不再当作致命错误（常见于容器里的视频轨不支持） */
   private startedPlayback: boolean = false;
 
@@ -49,6 +51,7 @@ export class VideoEngine {
     this.state = MediaDefaults.videoState(title);
     this.surfaceProvider = surfaceProvider;
     this.surfaceAttached = false;
+    this.tracksLoaded = false;
     this.startedPlayback = false;
     this.emit();
     try {
@@ -66,6 +69,15 @@ export class VideoEngine {
           this.state.durationMs = time;
           this.emit();
         }
+      });
+      player.on('videoSizeChange', (width: number, height: number) => {
+        Logger.info('VideoEngine', `视频尺寸变化 ${width}x${height}`);
+      });
+      player.on('startRenderFrame', () => {
+        Logger.info('VideoEngine', '首帧画面已渲染');
+      });
+      player.on('trackChange', (index: number, isSelected: boolean) => {
+        this.handleTrackChange(index, isSelected);
       });
       player.on('error', (err: Error) => {
         const detail: string = err === undefined || err === null ? 'unknown'
@@ -86,7 +98,8 @@ export class VideoEngine {
         this.state.loading = false;
         this.emit();
       });
-      this.attachSurface(player);
+      // 注意：surfaceId 必须在设置 url 之后（initialized）、prepare 之前绑定，
+      // 提前绑定会被播放器丢弃，表现为"只有声音没有画面"。
       if (source.fd >= 0) {
         const descriptor: media.AVFileDescriptor = { fd: source.fd, offset: 0, length: -1 };
         player.fdSrc = descriptor;
@@ -103,27 +116,91 @@ export class VideoEngine {
     }
   }
 
-  /** 绑定渲染 Surface；XComponent 刚创建时 surfaceId 可能为空，这里会重试 */
-  private attachSurface(player: media.AVPlayer): void {
-    if (this.surfaceAttached) {
-      return;
+  private clearSurfaceTimer(): void {
+    if (this.surfaceTimer !== -1) {
+      clearTimeout(this.surfaceTimer);
+      this.surfaceTimer = -1;
     }
+  }
+
+  /** 把当前 SurfaceId 交给播放器，成功返回 true。必须在 initialized 之后、prepare 之前调用 */
+  private attachSurface(player: media.AVPlayer): boolean {
     const surfaceId: string = this.surfaceProvider();
     if (surfaceId.length === 0) {
       Logger.warn('VideoEngine', '尚未取到 SurfaceId，稍后重试');
-      return;
+      return false;
     }
     try {
       player.surfaceId = surfaceId;
       this.surfaceAttached = true;
       Logger.info('VideoEngine', `已绑定渲染 Surface: ${surfaceId}`);
+      return true;
     } catch (err) {
       Logger.error('VideoEngine', '设置 surfaceId 失败', err as Error);
+      return false;
     }
   }
 
+  private preparePlayer(player: media.AVPlayer): void {
+    player.prepare().catch((err: Error) => {
+      Logger.error('VideoEngine', 'prepare 失败', err);
+      this.state.error = FsErrorText.DECODE;
+      this.state.loading = false;
+      this.emit();
+    });
+  }
+
   /**
-   * 重新绑定 Surface：XComponent 被重建（尺寸变化、页面重排）后会触发 onLoad，
+   * SurfaceId 取不到时按 100ms 重试（最多约 2s）：拿到后再 prepare，
+   * 保证起播时 surface 一定已经绑定。
+   */
+  private retryAttachThenPrepare(player: media.AVPlayer, attempt: number): void {
+    if (this.player !== player) {
+      return;
+    }
+    if (this.surfaceTimer !== -1) {
+      return;
+    }
+    if (attempt > 20) {
+      Logger.warn('VideoEngine', 'SurfaceId 始终不可用，仍继续 prepare');
+      this.preparePlayer(player);
+      return;
+    }
+    this.surfaceTimer = setTimeout(() => {
+      this.surfaceTimer = -1;
+      if (this.player !== player) {
+        return;
+      }
+      if (this.attachSurface(player)) {
+        this.preparePlayer(player);
+        return;
+      }
+      this.retryAttachThenPrepare(player, attempt + 1);
+    }, 100);
+  }
+
+  /** 播放中重建 Surface：只重绑，不再触发 prepare */
+  private retryAttachOnly(player: media.AVPlayer, attempt: number): void {
+    if (this.player !== player || this.surfaceTimer !== -1) {
+      return;
+    }
+    if (attempt > 20) {
+      Logger.warn('VideoEngine', '播放中 SurfaceId 始终不可用');
+      return;
+    }
+    this.surfaceTimer = setTimeout(() => {
+      this.surfaceTimer = -1;
+      if (this.player !== player) {
+        return;
+      }
+      if (!this.attachSurface(player)) {
+        this.retryAttachOnly(player, attempt + 1);
+      }
+    }, 100);
+  }
+
+  /**
+   * 重新绑定 Surface：XComponent 被重建（尺寸变化、页面重排、旋转屏幕）后会触发 onLoad，
    * 此时旧的 surfaceId 已失效，必须重新设给播放器，否则表现为"只有声音没有画面"。
    */
   reattachSurface(): void {
@@ -131,8 +208,10 @@ export class VideoEngine {
     if (player === null) {
       return;
     }
-    this.surfaceAttached = false;
-    this.attachSurface(player);
+    this.clearSurfaceTimer();
+    if (!this.attachSurface(player)) {
+      this.retryAttachOnly(player, 0);
+    }
   }
 
   private handleState(next: media.AVPlayerState): void {
@@ -142,19 +221,25 @@ export class VideoEngine {
     }
     Logger.info('VideoEngine', `播放器状态: ${next}`);
     if (next === 'initialized') {
-      // 视频只出声不出画面，通常就是这里 surfaceId 没绑上
-      this.attachSurface(player);
-      player.prepare().catch((err: Error) => {
-        Logger.error('VideoEngine', 'prepare 失败', err);
-        this.state.error = FsErrorText.DECODE;
-        this.state.loading = false;
-        this.emit();
-      });
+      // 必须先绑定 Surface 再 prepare，否则视频轨没有渲染目标（有声无画）
+      if (this.attachSurface(player)) {
+        this.preparePlayer(player);
+      } else {
+        this.retryAttachThenPrepare(player, 0);
+      }
       return;
     }
     if (next === 'prepared') {
-      // 兜底：initialized 阶段若还没拿到 SurfaceId，这里再试一次
-      this.attachSurface(player);
+      if (!this.surfaceAttached) {
+        this.attachSurface(player);
+      }
+      try {
+        // 默认 VIDEO_SCALE_TYPE_FIT 会把画面拉伸铺满窗口，导致比例失真；
+        // SCALED_ASPECT 保持原始比例并留黑边（API 20+，低版本失败时忽略）。
+        player.videoScaleType = media.VideoScaleType.VIDEO_SCALE_TYPE_SCALED_ASPECT;
+      } catch (err) {
+        Logger.warn('VideoEngine', '设置视频缩放模式失败');
+      }
       this.state.loading = false;
       this.state.durationMs = player.duration;
       Logger.info('VideoEngine',
@@ -163,6 +248,7 @@ export class VideoEngine {
         Logger.warn('VideoEngine', '播放器报告画面尺寸为 0：可能没有视频轨或编码不受支持');
       }
       this.emit();
+      this.loadTracks();
       player.play().catch((err: Error) => {
         Logger.error('VideoEngine', 'play 失败', err);
       });
@@ -238,55 +324,197 @@ export class VideoEngine {
     }
   }
 
-  async loadTracks(): Promise<TrackOption[]> {
-    const player: media.AVPlayer | null = this.player;
-    if (player === null) {
-      return [];
+  private static readNumber(track: media.MediaDescription, key: string): number {
+    const value: Object = track[key];
+    const parsed: number = Number(value);
+    return Number.isFinite(parsed) ? parsed : -1;
+  }
+
+  private static readText(track: media.MediaDescription, key: string): string {
+    const value: Object = track[key];
+    return typeof value === 'string' ? value : '';
+  }
+
+  private static trackLabel(prefix: string, order: number, name: string, language: string,
+    codec: string): string {
+    let detail: string = '';
+    if (name.length > 0 && name !== 'audio' && name !== 'video' && name !== 'subtitle') {
+      detail = name;
+    } else if (codec.length > 0) {
+      const slash: number = codec.lastIndexOf('/');
+      detail = slash >= 0 ? codec.substring(slash + 1) : codec;
     }
-    const options: TrackOption[] = [];
+    if (language.length > 0) {
+      detail = detail.length > 0 ? `${detail} · ${language}` : language;
+    }
+    return detail.length > 0 ? `${prefix} ${order} · ${detail}` : `${prefix} ${order}`;
+  }
+
+  /** 读取容器内的音轨 / 字幕轨（必须在 prepared 之后调用），结果写入状态并返回 */
+  async loadTracks(force: boolean = false): Promise<TrackOption[]> {
+    const player: media.AVPlayer | null = this.player;
+    if (player === null || (this.tracksLoaded && !force)) {
+      return this.state.audioTracks.concat(this.state.subtitleTracks);
+    }
+    const audio: TrackOption[] = [];
+    const subtitle: TrackOption[] = [];
     try {
       const tracks: Array<media.MediaDescription> = await player.getTrackDescription();
+      Logger.info('VideoEngine', `轨道总数: ${tracks.length}`);
+      let audioOrder: number = 0;
+      let subtitleOrder: number = 0;
       for (const track of tracks) {
-        const index: number = track.trackIndex === undefined ? -1 : Number(track.trackIndex);
-        const isSubtitle: boolean = track.trackType === 'TEXT';
-        const label: string = isSubtitle ? `字幕 ${index + 1}` : `音轨 ${index + 1}`;
-        options.push({ index: index, label: label, isSubtitle: isSubtitle });
-      }
-      for (const option of options) {
-        if (option.isSubtitle) {
-          this.state.subtitleTracks.push(option);
-        } else {
-          this.state.audioTracks.push(option);
+        const index: number = VideoEngine.readNumber(track, media.MediaDescriptionKey.MD_KEY_TRACK_INDEX);
+        if (index < 0) {
+          continue;
+        }
+        const type: number = VideoEngine.readNumber(track, media.MediaDescriptionKey.MD_KEY_TRACK_TYPE);
+        const name: string = VideoEngine.readText(track, media.MediaDescriptionKey.MD_KEY_TRACK_NAME);
+        const language: string = VideoEngine.readText(track, media.MediaDescriptionKey.MD_KEY_LANGUAGE);
+        const codec: string = VideoEngine.readText(track, media.MediaDescriptionKey.MD_KEY_CODEC_MIME);
+        Logger.info('VideoEngine',
+          `轨道 ${index}: type=${type} name=${name} lang=${language} codec=${codec}`);
+        if (type === media.MediaType.MEDIA_TYPE_AUD) {
+          audioOrder++;
+          const option: TrackOption = {
+            index: index,
+            label: VideoEngine.trackLabel('音轨', audioOrder, name, language, codec),
+            isSubtitle: false
+          };
+          audio.push(option);
+        } else if (type === media.MediaType.MEDIA_TYPE_SUBTITLE) {
+          subtitleOrder++;
+          const option: TrackOption = {
+            index: index,
+            label: VideoEngine.trackLabel('字幕', subtitleOrder, name, language, codec),
+            isSubtitle: true
+          };
+          subtitle.push(option);
         }
       }
+      this.state.audioTracks = audio;
+      this.state.subtitleTracks = subtitle;
+      this.state.selectedAudioId = audio.length > 0 ? audio[0].index : -1;
+      this.state.selectedSubtitleId = -1;
+      try {
+        const selected: number[] = await player.getSelectedTracks();
+        for (const selectedIndex of selected) {
+          for (const track of audio) {
+            if (track.index === selectedIndex) {
+              this.state.selectedAudioId = selectedIndex;
+            }
+          }
+          for (const track of subtitle) {
+            if (track.index === selectedIndex) {
+              this.state.selectedSubtitleId = selectedIndex;
+            }
+          }
+        }
+      } catch (err) {
+        Logger.warn('VideoEngine', '读取当前选中轨道失败');
+      }
+      this.tracksLoaded = true;
       this.emit();
+      Logger.info('VideoEngine', `轨道信息: 音轨 ${audio.length} 条, 字幕 ${subtitle.length} 条`);
     } catch (err) {
       Logger.warn('VideoEngine', '读取轨道信息失败');
     }
-    return options;
+    return audio.concat(subtitle);
   }
 
-  /**
-   * 选择轨道。当前 SDK 的 AVPlayer 未开放 selectTrack，这里仅记录选择状态；
-   * 真正的轨道切换在后续版本通过原生引擎实现（见 docs/DEVIATIONS.md）。
-   */
-  selectTrack(index: number): void {
+  private async selectSubtitle(index: number): Promise<void> {
+    const player: media.AVPlayer | null = this.player;
+    if (player === null) {
+      return;
+    }
+    const previous: number = this.state.selectedSubtitleId;
+    if (previous >= 0 && previous !== index) {
+      try {
+        await player.deselectTrack(previous);
+      } catch (err) {
+        Logger.debug('VideoEngine', '取消旧字幕轨失败');
+      }
+    }
     if (index < 0) {
       this.state.selectedSubtitleId = -1;
       this.emit();
       return;
     }
+    try {
+      await player.selectTrack(index);
+      this.state.selectedSubtitleId = index;
+      this.emit();
+      Logger.info('VideoEngine', `已切换字幕轨: ${index}`);
+    } catch (err) {
+      Logger.warn('VideoEngine', `切换字幕失败: ${index}`);
+    }
+  }
+
+  /** 选择轨道：index < 0 表示关闭字幕；音轨/字幕均通过 AVPlayer.selectTrack 真正切换 */
+  async selectTrack(index: number): Promise<void> {
+    if (index < 0) {
+      await this.selectSubtitle(-1);
+      return;
+    }
+    let isAudio: boolean = false;
+    let isSubtitle: boolean = false;
     for (const track of this.state.audioTracks) {
       if (track.index === index) {
-        this.state.selectedAudioId = index;
+        isAudio = true;
       }
     }
     for (const track of this.state.subtitleTracks) {
       if (track.index === index) {
-        this.state.selectedSubtitleId = index;
+        isSubtitle = true;
       }
     }
-    this.emit();
+    if (isSubtitle) {
+      await this.selectSubtitle(index);
+      return;
+    }
+    const player: media.AVPlayer | null = this.player;
+    if (player === null || !isAudio) {
+      return;
+    }
+    try {
+      await player.selectTrack(index);
+      this.state.selectedAudioId = index;
+      this.emit();
+      Logger.info('VideoEngine', `已切换音轨: ${index}`);
+    } catch (err) {
+      Logger.warn('VideoEngine', `切换音轨失败: ${index}`);
+    }
+  }
+
+  /** 播放器上报轨道变化时同步界面上的选中状态 */
+  private handleTrackChange(index: number, isSelected: boolean): void {
+    let changed: boolean = false;
+    for (const track of this.state.audioTracks) {
+      if (track.index === index) {
+        if (isSelected && this.state.selectedAudioId !== index) {
+          this.state.selectedAudioId = index;
+          changed = true;
+        } else if (!isSelected && this.state.selectedAudioId === index) {
+          this.state.selectedAudioId = -1;
+          changed = true;
+        }
+      }
+    }
+    for (const track of this.state.subtitleTracks) {
+      if (track.index === index) {
+        if (isSelected && this.state.selectedSubtitleId !== index) {
+          this.state.selectedSubtitleId = index;
+          changed = true;
+        } else if (!isSelected && this.state.selectedSubtitleId === index) {
+          this.state.selectedSubtitleId = -1;
+          changed = true;
+        }
+      }
+    }
+    Logger.info('VideoEngine', `轨道变化: index=${index} selected=${isSelected}`);
+    if (changed) {
+      this.emit();
+    }
   }
 
   positionMs(): number {
@@ -298,6 +526,10 @@ export class VideoEngine {
   }
 
   async release(): Promise<void> {
+    this.clearSurfaceTimer();
+    this.surfaceAttached = false;
+    this.tracksLoaded = false;
+    this.startedPlayback = false;
     const player: media.AVPlayer | null = this.player;
     this.player = null;
     if (player === null) {

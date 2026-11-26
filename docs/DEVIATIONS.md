@@ -148,6 +148,33 @@ v1.8.0 调整（真机反馈"所有视频都提示无法解码，但有声音"�
 - 仍待真机验证：`AVPlayer` 对 `http://127.0.0.1` 明文回环地址的支持度、大文件长时间播放的
   连接复用行为，以及 206 分段长度对 seek 的影响。
 
+v1.8.1 再次修复"远程视频只有声音没有画面"：
+- 根因：`surfaceId` 在设置 `url` **之前**（idle 状态）就绑定，并在 `initialized` 时因
+  `surfaceAttached` 已为 true 而跳过重绑。官方流程要求 `create → 设置监听 → 设置 url →
+  设置 surfaceId → prepare`；提前绑定的 SurfaceId 会被播放器丢弃，于是音频轨正常、视频轨没有渲染目标。
+- 修复：改为在 `initialized` 状态绑定 Surface 后再 `prepare()`；取不到 SurfaceId 时每 100ms 重试
+  （最多约 2s），确保起播那一刻 surface 一定已绑定。
+- XComponent 因旋转/重排重建时仍通过 `onLoad → reattachSurface()` 重新绑定，但只重绑、
+  不会重复 `prepare()`。
+- 新增 `videoSizeChange` / `startRenderFrame` 日志：有画面时能看到首帧渲染与真实分辨率，
+  若始终没有 `startRenderFrame`，即可判定为取流或视频轨解码问题而非 Surface 绑定问题。
+- 视频页进入时自动横屏：`setPreferredOrientation(LANDSCAPE)`，退出恢复 `UNSPECIFIED`；
+  智慧屏 / 2in1 不做旋转（本身是宽屏）。
+- 视频与音频仍为两个独立页面、两个独立引擎（`VideoPlayerPage + VideoEngine` /
+  `AudioPlayerPage + AudioEngine`）：视频页使用 XComponent Surface 渲染，音频页使用
+  AVPlayer + AVSession 后台播放，互不复用播放器实例。
+
+v1.8.2 播放页布局与轨道选择：
+- 画面比例：`AVPlayer.videoScaleType = VIDEO_SCALE_TYPE_SCALED_ASPECT`（默认 FIT 会拉伸铺满）。
+  真机截图 2760×1256、16:9 视频左右各 351px 黑边、有效画面 2058×1158。
+- 去掉原来悬浮在底部的三个按钮（被进度条层遮挡，点击无效），底部改为唯一工具栏：
+  进度条 → 时间 → [快退 / 播放暂停 / 快进 / 倍速 / 音轨 / 字幕]，按钮统一 78×38，
+  工具栏顶部就是进度条，不再向上越过进度条。
+- 音轨/字幕：prepared 后读取 `getTrackDescription()`，菜单显示 `音轨 N · 编码 · 语言`；
+  选择调用 `selectTrack()`，关闭字幕调用 `deselectTrack()`，`trackChange` 同步选中态。
+- 真机验证：Cold War MKV 4 条音轨（TrueHD/AC3/DTS/AC3）切换成功；Netflix MKV 2 条内嵌
+  SRT 字幕切换/关闭成功。
+
 ## 7. M2TS / TS 时长：已接入播放器，缺真实样本回归
 
 - `media/MpegTsDuration.ets` 按文档 §9.3 实现：
@@ -182,9 +209,16 @@ v1.8.0 调整（真机反馈"所有视频都提示无法解码，但有声音"�
 
 ## 9. 播放器轨道切换
 
-- 当前 SDK 的 `AVPlayer` 未开放 `selectTrack`，播放页的"音轨/字幕"菜单可以列出探测到的轨道，
-  但选择仅更新界面状态，不会真正切换。
-- 后续：随原生引擎（FFmpeg + XComponent）一起实现真正的轨道切换。
+- 已接入 `AVPlayer.getTrackDescription()` / `selectTrack()` / `deselectTrack()`：
+  - 在 `prepared` 后读取容器轨道（`track_index` / `track_type` / `track_name` / `language` / `codec_mime`）；
+  - 音轨与内嵌字幕轨都会出现在底部工具栏的「音轨」「字幕」菜单里，选择会真正切到对应轨道，
+    并通过 `trackChange` 事件同步选中状态；
+  - 「关闭字幕」调用 `deselectTrack()`。
+- 真机验证（HUAWEI Pura 90 Pro）：
+  - MKV 4 条音轨（TrueHD / AC3 / DTS / AC3）可切换，日志确认 `selectTrack` 成功；
+  - Netflix WEB-DL MKV 的 2 条内嵌 SRT 字幕可切换 / 关闭，日志确认 `selectTrack` 成功。
+- 限制：是否把内嵌字幕绘制到画面由系统播放器决定；外挂字幕仍按官方方案
+  （`addSubtitleFromFd` + `subtitleUpdate`）另行实现。
 
 ## 10. 焦点与遥控器
 
