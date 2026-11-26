@@ -30,6 +30,8 @@ export class Smb2Status {
   static readonly BAD_NETWORK_NAME: number = 0xC00000CC;
   static readonly FILE_IS_A_DIRECTORY: number = 0xC00000BA;
   static readonly NOT_A_DIRECTORY: number = 0xC0000103;
+  /** 读到文件末尾（READ 越过 EOF 时服务端返回） */
+  static readonly END_OF_FILE: number = 0xC0000011;
 }
 
 export class Smb2Header {

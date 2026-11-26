@@ -222,14 +222,22 @@ export class MediaStreamServer {
 
   private async sendBody(conn: socket.TCPSocketConnection, client: FileSystemClient, entry: StreamEntry,
     range: RangeSpec, headOnly: boolean): Promise<void> {
-    const total: number = range.end - range.start + 1;
-    const isPartial: boolean = range.partial;
+    // 单次响应最多 8MB：播放器 request bytes=0- 时也只回一段，再由它自己续请求，
+    // 避免一次性把整部电影推过去（SMB/FTP 上尤其重要）。
+    const MAX_SPAN: number = 8 * 1024 * 1024;
+    let end: number = range.end;
+    let isPartial: boolean = range.partial;
+    if (end - range.start + 1 > MAX_SPAN) {
+      end = range.start + MAX_SPAN - 1;
+      isPartial = true;
+    }
+    const total: number = end - range.start + 1;
     const status: string = isPartial ? '206 Partial Content' : '200 OK';
     const header: string = `HTTP/1.1 ${status}\r\n` +
       `Content-Type: ${entry.mimeType.length > 0 ? entry.mimeType : 'application/octet-stream'}\r\n` +
       `Content-Length: ${total}\r\n` +
       'Accept-Ranges: bytes\r\n' +
-      (isPartial ? `Content-Range: bytes ${range.start}-${range.end}/${entry.size}\r\n` : '') +
+      (isPartial ? `Content-Range: bytes ${range.start}-${end}/${entry.size}\r\n` : '') +
       'Cache-Control: no-store\r\nConnection: close\r\n\r\n';
     try {
       await conn.send({ data: header });
@@ -237,10 +245,10 @@ export class MediaStreamServer {
         await conn.close();
         return;
       }
-      const chunkSize: number = 256 * 1024;
+      const chunkSize: number = 512 * 1024;
       let offset: number = range.start;
-      while (offset <= range.end) {
-        const want: number = Math.min(chunkSize, range.end - offset + 1);
+      while (offset <= end) {
+        const want: number = Math.min(chunkSize, end - offset + 1);
         const buffer: ArrayBuffer = await client.readRange(entry.path, offset, want);
         if (buffer.byteLength === 0) {
           break;

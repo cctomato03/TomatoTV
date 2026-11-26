@@ -35,8 +35,16 @@ export interface Smb2Options {
   rootPath: string;
 }
 
-// SMB2 每 64KB 计 1 个 credit；用 64KB 分块可保证 CreditCharge 恒为 1
-const READ_CHUNK: number = 64 * 1024;
+// 每次 READ 读取的字节数（SMB2 每 64KB 计 1 个 credit，按长度算 CreditCharge）
+const READ_CHUNK: number = 512 * 1024;
+// 复用的读句柄上限与空闲回收时间（毫秒）
+const READ_HANDLE_LIMIT: number = 6;
+const READ_HANDLE_IDLE_MS: number = 60000;
+
+interface ReadHandle {
+  fileId: Smb2FileId;
+  lastUsed: number;
+}
 const DIR_OUTPUT_LENGTH: number = 64 * 1024;
 
 /**
@@ -61,6 +69,7 @@ export class Smb2Client {
   private requireSigning: boolean = false;
   private closed: boolean = false;
   private dialect: number = 0;
+  private readHandles: Map<string, ReadHandle> = new Map<string, ReadHandle>();
 
   constructor(options: Smb2Options) {
     this.options = options;
@@ -203,15 +212,25 @@ export class Smb2Client {
   }
 
   private async request(packet: Uint8Array): Promise<Smb2Header> {
+    return this.requestWithCharge(packet, 0);
+  }
+
+  /** charge > 0 时覆盖报文里的 CreditCharge（READ 按读取长度收费） */
+  private async requestWithCharge(packet: Uint8Array, charge: number): Promise<Smb2Header> {
     if (this.tcp === null || this.closed) {
       throw new FsError(FsErrorKind.NETWORK, 'SMB 连接已关闭');
     }
     const header: Smb2Header = Smb2Codec.parseHeader(packet);
     const messageId: number = header.messageId;
     const command: number = header.command;
-    // CreditCharge：按报文长度/64KB 计算（至少 1）
-    const charge: number = Math.max(1, Math.ceil(packet.length / 65536));
-    Ntlm.writeUint16(packet, 6, charge);
+    // CreditCharge：显式指定优先，否则按报文长度/64KB 计算（至少 1）
+    const effectiveCharge: number = charge > 0 ? charge : Math.max(1, Math.ceil(packet.length / 65536));
+    Ntlm.writeUint16(packet, 6, effectiveCharge);
+    // MessageId 是"序列号"：每发一个报文要前进 CreditCharge 步，
+    // 否则服务端会以 smb2_validate_sequence_number 直接断开连接（读大块时 charge > 1）。
+    if (effectiveCharge > 1) {
+      this.nextMessageId += (effectiveCharge - 1);
+    }
     const signed: Uint8Array = this.sign(packet);
     const framed: Uint8Array = Smb2Codec.frame(signed);
     const promise: Promise<Smb2Header> = new Promise<Smb2Header>(
@@ -237,7 +256,8 @@ export class Smb2Client {
       clearTimeout(timeout);
     }
     if (response.status !== Smb2Status.SUCCESS && response.status !== Smb2Status.BUFFER_OVERFLOW &&
-      response.status !== Smb2Status.NO_MORE_FILES && response.status !== Smb2Status.MORE_PROCESSING_REQUIRED) {
+      response.status !== Smb2Status.NO_MORE_FILES && response.status !== Smb2Status.MORE_PROCESSING_REQUIRED &&
+      response.status !== Smb2Status.END_OF_FILE) {
       Logger.warn('Smb2Client', `${Smb2Client.commandName(command)} 返回状态 0x${response.status.toString(16)}`);
       throw Smb2Client.mapStatus(response.status, command);
     }
@@ -372,6 +392,81 @@ export class Smb2Client {
     return `session=${this.sessionId} tree=${this.treeId} dialect=0x${this.dialect.toString(16)}`;
   }
 
+  /**
+   * 取一个"复用"的读句柄：视频/音频边播边读时每 512KB 都要读一次，
+   * 若每次 CREATE+CLOSE（3 个往返）会非常慢，这里按路径缓存句柄。
+   */
+  private async handleForRead(logicalPath: string): Promise<Smb2FileId> {
+    this.dropIdleHandles();
+    const existing: ReadHandle | undefined = this.readHandles.get(logicalPath);
+    if (existing !== undefined) {
+      existing.lastUsed = Date.now();
+      return existing.fileId;
+    }
+    const fileId: Smb2FileId = await this.open(logicalPath, false);
+    if (this.readHandles.size >= READ_HANDLE_LIMIT) {
+      const oldest: string = this.oldestHandlePath();
+      if (oldest.length > 0) {
+        await this.releaseReadHandle(oldest);
+      }
+    }
+    const handle: ReadHandle = { fileId: fileId, lastUsed: Date.now() };
+    this.readHandles.set(logicalPath, handle);
+    return fileId;
+  }
+
+  private oldestHandlePath(): string {
+    let oldestPath: string = '';
+    let oldestTime: number = Number.MAX_VALUE;
+    this.readHandles.forEach((handle: ReadHandle, path: string) => {
+      if (handle.lastUsed < oldestTime) {
+        oldestTime = handle.lastUsed;
+        oldestPath = path;
+      }
+    });
+    return oldestPath;
+  }
+
+  private dropIdleHandles(): void {
+    const now: number = Date.now();
+    const expired: string[] = [];
+    this.readHandles.forEach((handle: ReadHandle, path: string) => {
+      if (now - handle.lastUsed > READ_HANDLE_IDLE_MS) {
+        expired.push(path);
+      }
+    });
+    for (const path of expired) {
+      const handle: ReadHandle | undefined = this.readHandles.get(path);
+      this.readHandles.delete(path);
+      if (handle !== undefined) {
+        this.request(Smb2Codec.buildClose(this.allocMessageId(), this.sessionId, this.treeId, handle.fileId))
+          .catch((err: Error) => {
+            Logger.debug('Smb2Client', '关闭空闲读句柄失败');
+          });
+      }
+    }
+  }
+
+  private async releaseReadHandle(logicalPath: string): Promise<void> {
+    const handle: ReadHandle | undefined = this.readHandles.get(logicalPath);
+    if (handle === undefined) {
+      return;
+    }
+    this.readHandles.delete(logicalPath);
+    await this.closeHandle(handle.fileId);
+  }
+
+  /** 释放全部读句柄（来源失效/连接关闭时调用） */
+  async releaseReadHandles(): Promise<void> {
+    const paths: string[] = [];
+    this.readHandles.forEach((handle: ReadHandle, path: string) => {
+      paths.push(path);
+    });
+    for (const path of paths) {
+      await this.releaseReadHandle(path);
+    }
+  }
+
   private async closeHandle(fileId: Smb2FileId): Promise<void> {
     try {
       await this.request(Smb2Codec.buildClose(this.allocMessageId(), this.sessionId, this.treeId, fileId));
@@ -460,29 +555,30 @@ export class Smb2Client {
   }
 
   async readRange(logicalPath: string, offset: number, length: number): Promise<ArrayBuffer> {
-    const fileId: Smb2FileId = await this.open(logicalPath, false);
+    const fileId: Smb2FileId = await this.handleForRead(logicalPath);
     const chunks: Uint8Array[] = [];
     let total: number = 0;
-    try {
-      let position: number = offset;
-      const remainingWanted: number = length;
-      while (total < remainingWanted) {
-        const want: number = Math.min(READ_CHUNK, remainingWanted - total);
-        const response: Smb2Header = await this.request(
-          Smb2Codec.buildRead(this.allocMessageId(), this.sessionId, this.treeId, fileId, position, want));
-        const data: Uint8Array = Smb2Codec.parseReadData(response.raw);
-        if (data.length === 0) {
-          break;
-        }
-        chunks.push(data);
-        total += data.length;
-        position += data.length;
-        if (data.length < want) {
-          break;
-        }
+    let position: number = offset;
+    while (total < length) {
+      const want: number = Math.min(READ_CHUNK, length - total);
+      // READ 的 CreditCharge 按"要读的字节数"计算（每 64KB 一个 credit）
+      const charge: number = Math.max(1, Math.ceil(want / 65536));
+      const response: Smb2Header = await this.requestWithCharge(
+        Smb2Codec.buildRead(this.allocMessageId(), this.sessionId, this.treeId, fileId, position, want), charge);
+      if (response.status !== Smb2Status.SUCCESS) {
+        // 例如 STATUS_END_OF_FILE：读到文件末尾了
+        break;
       }
-    } finally {
-      await this.closeHandle(fileId);
+      const data: Uint8Array = Smb2Codec.parseReadData(response.raw);
+      if (data.length === 0) {
+        break;
+      }
+      chunks.push(data);
+      total += data.length;
+      position += data.length;
+      if (data.length < want) {
+        break;
+      }
     }
     const merged: Uint8Array = SmbCrypto.concat(...chunks);
     return merged.buffer as ArrayBuffer;
@@ -502,6 +598,7 @@ export class Smb2Client {
     if (this.closed) {
       return;
     }
+    await this.releaseReadHandles();
     this.closed = true;
     if (this.tcp !== null && this.sessionId !== 0) {
       try {

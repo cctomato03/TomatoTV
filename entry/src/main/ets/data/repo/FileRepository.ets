@@ -100,8 +100,9 @@ export class FileRepository {
   /**
    * 媒体播放句柄：
    *  - 本机文件直接用 fd（零拷贝）；
-   *  - 远程文件优先走本机回环 HTTP 代理，真正按 Range 流式播放（不整文件下载）；
-   *  - allowStream = false 或代理不可用时，退回"整文件缓存 + fd"。
+   *  - 远程文件（音频与视频）都优先走本机回环 HTTP 代理，按 Range 边播边读，
+   *    不整文件下载，起播快；
+   *  - allowStream = false 或代理不可用时，才退回"整文件缓存 + fd"。
    */
   async playable(source: FileSource, entry: FileEntry, allowStream: boolean = true): Promise<PlayableMedia> {
     const mimeType: string = FileKinds.mimeOfKind(entry.kind, entry.name);

@@ -521,6 +521,9 @@ export class Smb2TestServer {
     const length = body.readUInt32LE(4);
     const offset = Number(body.readBigUInt64LE(8));
     const available = Math.max(0, FILE_CONTENT.length - offset);
+    if (available === 0) {
+      return this.simpleResponse(header, 0xc0000011, Buffer.alloc(0)); // STATUS_END_OF_FILE
+    }
     const take = Math.min(length, available);
     const payload = FILE_CONTENT.subarray(offset, offset + take);
     const fixed = Buffer.alloc(16);
