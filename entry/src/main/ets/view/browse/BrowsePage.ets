@@ -38,6 +38,7 @@ export struct BrowsePage {
   @State loading: boolean = true;
   @State refreshing: boolean = false;
   @State errorText: string = '';
+  @State errorDetail: string = '';
   @State permissionRequired: boolean = false;
   @State currentPath: string = '';
   @State viewMode: ViewMode = 'list';
@@ -96,6 +97,7 @@ export struct BrowsePage {
       this.entries = [];
     }
     this.errorText = '';
+    this.errorDetail = '';
     this.permissionRequired = false;
     try {
       const list: FileEntry[] = await this.container.repository!.list(source, path);
@@ -117,14 +119,18 @@ export struct BrowsePage {
     if (err instanceof FsError) {
       if (err.kind === FsErrorKind.UNSUPPORTED) {
         this.errorText = err.message;
+        this.errorDetail = '';
         return;
       }
       this.permissionRequired = err.kind === FsErrorKind.PERMISSION;
       this.errorText = FsErrorText.of(err.kind);
+      // 保留协议层细节（状态码 / 出错命令），便于用户反馈与真机定位
+      this.errorDetail = err.message;
       Logger.error('BrowsePage', err.message, err as Error);
       return;
     }
     this.errorText = FsErrorText.NETWORK;
+    this.errorDetail = err.message;
     Logger.error('BrowsePage', '列目录异常', err);
   }
 
@@ -432,6 +438,15 @@ export struct BrowsePage {
         .fontColor($r('app.color.text_primary'))
         .textAlign(TextAlign.Center)
         .padding({ left: 32, right: 32 })
+      if (this.errorDetail.length > 0) {
+        Text(this.errorDetail)
+          .fontSize(11)
+          .fontColor($r('app.color.text_tertiary'))
+          .textAlign(TextAlign.Center)
+          .maxLines(3)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .padding({ left: 32, right: 32 })
+      }
       Row({ space: 12 }) {
         Button('重试')
           .type(ButtonType.Capsule)

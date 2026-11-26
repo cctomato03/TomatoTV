@@ -233,9 +233,14 @@ export struct SourceEditPage {
       await this.container.repository!.test(source);
       promptAction.showToast({ message: '连接成功' });
     } catch (err) {
-      const message: string = err instanceof FsError ? FsErrorText.of(err.kind) : FsErrorText.NETWORK;
-      promptAction.showToast({ message: err instanceof FsError && err.kind === FsErrorKind.UNSUPPORTED ?
-        err.message : message });
+      const kind: FsErrorKind | null = err instanceof FsError ? (err as FsError).kind : null;
+      let message: string = FsErrorText.NETWORK;
+      if (kind !== null) {
+        message = kind === FsErrorKind.UNSUPPORTED || kind === FsErrorKind.SERVER
+          ? (err as FsError).message : FsErrorText.of(kind);
+      }
+      promptAction.showToast({ message: message });
+      Logger.warn('SourceEditPage', `测试连接失败: ${message}`);
     } finally {
       this.testing = false;
       await this.container.repository!.invalidate(source.id);

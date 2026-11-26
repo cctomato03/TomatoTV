@@ -139,7 +139,7 @@ export struct HomePage {
                 tvMode: Layout.focusDriven(this.breakpoint, this.tvMode),
                 onOpen: (source: FileSource) => this.openSource(source),
                 onEdit: (source: FileSource) => this.editSource(source),
-                onLongPressMenu: (source: FileSource) => this.confirmDelete(source)
+                onDelete: (source: FileSource) => this.confirmDelete(source)
               })
             }
             .padding({ left: 16, right: 16 })
