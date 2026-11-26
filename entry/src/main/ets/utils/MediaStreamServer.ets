@@ -94,6 +94,8 @@ export class MediaStreamServer {
       this.entries.set(token, entry);
       this.clients.set(sourceId, client);
       const encodedPath: string = encodeURIComponent(path);
+      Logger.info('MediaStreamServer',
+        `已注册流式播放: mime=${mimeType} size=${size} path=${path}`);
       return `http://127.0.0.1:${port}/stream/${token}/${encodedPath}`;
     } catch (err) {
       Logger.error('MediaStreamServer', '注册流式播放失败', err as Error);
@@ -193,6 +195,8 @@ export class MediaStreamServer {
     }
     const rangeHeader: string = MediaStreamServer.headerValue(lines, 'range');
     const range: RangeSpec = RangeHeader.parse(rangeHeader, entry.size);
+    Logger.info('MediaStreamServer',
+      `播放器请求 ${method} range="${rangeHeader.length === 0 ? '无' : rangeHeader}" size=${entry.size}`);
     if (!range.valid || range.start < 0) {
       const header: string = 'HTTP/1.1 416 Range Not Satisfiable\r\n' +
         `Content-Range: bytes */${entry.size}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`;

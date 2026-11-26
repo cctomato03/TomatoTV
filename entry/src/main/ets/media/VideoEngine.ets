@@ -1,4 +1,5 @@
 import { media } from '@kit.MediaKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { FsErrorText, PlayableMedia } from '../data/fs/FileSystemClient';
 import { MediaDefaults, TrackOption, VideoState } from './MediaTypes';
 import { Logger } from '../utils/Logger';
@@ -15,6 +16,8 @@ export class VideoEngine {
   };
   private surfaceProvider: SurfaceProvider = () => '';
   private surfaceAttached: boolean = false;
+  /** 是否已经开始出画面/出声：已经开始后出现的错误不再当作致命错误（常见于容器里的视频轨不支持） */
+  private startedPlayback: boolean = false;
 
   onChange(listener: VideoListener): void {
     this.listener = listener;
@@ -46,6 +49,7 @@ export class VideoEngine {
     this.state = MediaDefaults.videoState(title);
     this.surfaceProvider = surfaceProvider;
     this.surfaceAttached = false;
+    this.startedPlayback = false;
     this.emit();
     try {
       const player: media.AVPlayer = await media.createAVPlayer();
@@ -64,7 +68,20 @@ export class VideoEngine {
         }
       });
       player.on('error', (err: Error) => {
-        Logger.error('VideoEngine', '播放器错误', err);
+        const detail: string = err === undefined || err === null ? 'unknown'
+          : `${(err as BusinessError).code} ${err.message}`;
+        const playerState: string = player.state;
+        const alreadyRunning: boolean = this.startedPlayback || playerState === 'playing' ||
+          playerState === 'prepared';
+        if (alreadyRunning) {
+          // 已经在播（有声/有画面）后报错：多为容器里的视频轨编码不受支持，
+          // 这里只记录，不把界面切成"无法解码"
+          Logger.warn('VideoEngine', `播放中收到错误（已忽略）: ${detail}`);
+          this.state.buffering = false;
+          this.emit();
+          return;
+        }
+        Logger.error('VideoEngine', `播放器错误: ${detail}`, err);
         this.state.error = FsErrorText.DECODE;
         this.state.loading = false;
         this.emit();
@@ -154,6 +171,7 @@ export class VideoEngine {
     if (next === 'playing') {
       this.state.playing = true;
       this.state.loading = false;
+      this.startedPlayback = true;
       this.emit();
       return;
     }
