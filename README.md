@@ -15,7 +15,7 @@ HarmonyOS NEXT 原生的本地与网络文件管理器，附带通用媒体播�
 | 领域 | 当前状态 |
 |---|---|
 | 工程骨架 / 四设备形态 / 断点自适应 | ✅ |
-| 首页来源卡片、添加/编辑/删除来源 | ✅ |
+| 首页来源卡片、添加/编辑/删除来源（卡片上有"编辑"按钮，长按可出菜单） | ✅ |
 | 本机目录（Picker + 持久化授权 + 应用私有目录） | ✅ |
 | WebDAV（PROPFIND 列表 / Range 读取 / 错误码映射） | ✅ |
 | FTP / FTPS-隐式 TLS（PASV / USER-PASS / MLSD-LIST / SIZE / MDTM / REST+RETR） | ✅ |
@@ -86,10 +86,17 @@ npm test
 npm run test:viewer
 ```
 
-SMB 客户端另有一个本地冒烟脚本（需要一台 SMB 服务端）：
+协议一致性测试（自带按规范实现的最小服务端，无需真实设备/服务器，CI 每次运行）：
 
 ```bash
-SMB_SMOKE_HOST=192.168.1.9 SMB_SMOKE_SHARE=media npm run test:smb
+npm run test:smb       # SMB2：NEGOTIATE -> NTLMv2 -> TREE_CONNECT -> 列目录 -> 读文件
+npm run test:webdav    # WebDAV：PROPFIND 列表 + Range 分段读取
+```
+
+对真实 SMB 服务器做冒烟（可选，需要一台可达的 SMB 服务端）：
+
+```bash
+SMB_SMOKE_HOST=192.168.1.9 SMB_SMOKE_SHARE=media SMB_SMOKE_USER=u SMB_SMOKE_PASSWORD=p npm run test:smb:live
 ```
 
 ## 本地构建（DevEco Studio）

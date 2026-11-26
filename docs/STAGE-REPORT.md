@@ -96,6 +96,15 @@
 | FTPS | 隐式 TLS（990）通过 TLSSocket 打通控制与数据通道；显式 AUTH TLS 仍不支持 |
 | 测试 | 新增 `test/unit/smb.test.ts`（12 项，含 MS-NLMP 官方 NTLMv2 向量）、`scripts/test/run-viewer.mjs`（四页渲染）、`scripts/test/run-smb-smoke.mjs`（协议冒烟），CI 增加浏览器集成测试步骤 |
 
+## 4.4 v1.4.1 增量（真机反馈修复）
+
+| 问题 | 处理 |
+|---|---|
+| WebDAV 图片加载不出来 | 根因是"裸沙箱路径交给 `Image()`" + 缓存可能被 0 字节条目污染。改为：缓存文件 → `createPixelMap` 解码 → `Image(pixelMap)`；`RemoteCache.download` 增加完整性校验与失败清理；`readRange` 兼容字符串返回 |
+| SMB 提示"服务端返回异常" | 一致性测试抓出三个协议 bug（SESSION_SETUP blob 偏移、READ DataOffset、NTLM 标志），并补了请求超时、枚举防死循环、错误信息带命令+状态码 |
+| 已有存储缺少修改入口 | 来源卡片新增显式"编辑"按钮（长按仍出菜单）；移除了长按直接弹删除的旧行为；内置来源不可删除 |
+| 测试 | 新增 `npm run test:smb`（SMB2 一致性，自带服务端）与 `npm run test:webdav`（WebDAV 一致性），均进 CI |
+
 ## 5. 风险
 
 | 风险 | 影响 | 缓解 |

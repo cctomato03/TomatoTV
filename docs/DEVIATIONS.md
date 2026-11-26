@@ -48,15 +48,27 @@
     QUERY_DIRECTORY / QUERY_INFO / READ / CLOSE 的编解码；
   - `data/smb/Smb2Client.ets`：NetBIOS 分帧、MessageId 管理、报文签名（HMAC-SHA256）、会话/树管理；
   - `data/fs/SmbFileSystem.ets`：接入统一 FileSystemClient（list / stat / readRange）。
-- 已验证：
-  - 单元测试覆盖全部密码学与 NTLM 报文；
-  - 本地冒烟脚本 `npm run test:smb` 对着真实 Windows SMB 服务端跑通了 **NEGOTIATE**
-    （协商到 0x0210，正确解析 SecurityMode 与方言）。
-- 未验证 / 限制：
+- 已验证（v1.4.1 起）：
+  - 单元测试覆盖全部密码学与 NTLM 报文（含 MS-NLMP 4.2.4 官方示例）；
+  - **协议一致性测试** `npm run test:smb`：仓库内自带一个按 MS-SMB2 严格实现的最小服务端，
+    它会校验客户端每个报文的 StructureSize / 偏移是否合法，已跑通
+    `NEGOTIATE → SESSION_SETUP(NTLMv2) → TREE_CONNECT → CREATE → QUERY_DIRECTORY →
+    QUERY_INFO → READ → CLOSE → LOGOFF`，并逐字节校验 READ 返回内容；
+  - 对着真实 Windows SMB 服务端（`npm run test:smb:live`）已协商到 0x0210。
+- 本次一致性测试抓出并修复的三个真 bug：
+  1. SESSION_SETUP 响应里安全 blob 的偏移用错了（用了 NEGOTIATE 的 56/58，应为 4/6）——
+     这会导致认证永远拿不到挑战；
+  2. READ 响应里 `DataOffset` 读成了 body 偏移 0（应为 2）——这会让远程文件读到错位数据
+     （图片/文本/视频全花）；
+  3. NTLM 标志里声明了 SIGN/SEAL 却没做密钥交换——服务端会期待
+     EncryptedRandomSessionKey，可能导致会话密钥与签名不匹配；已改为
+     `UNICODE|REQUEST_TARGET|NTLM|ALWAYS_SIGN|EXTENDED_SESSIONSECURITY|TARGET_INFO|128|56`。
+  另外还补了：请求 20s 超时、目录枚举防死循环、错误信息带上"命令名 + 状态码"。
+- 仍未验证 / 限制：
   - 本机 Windows 服务端在 SESSION_SETUP 阶段返回 `STATUS_INVALID_PARAMETER`，
-    用第三方参考客户端（`@marsaud/smb2`，同样是原始 NTLMSSP）测试也是同样结果，
-    判断是该机器的 NTLM 加固策略所致，**因此端到端认证尚未在真实服务端验证**；
-    需要在你的 NAS/Samba（通常支持 NTLMv2）上跑一次 `npm run test:smb` 确认。
+    第三方参考客户端（`@marsaud/smb2`）在该机器上同样被拒，判断是 Windows 的 NTLM
+    加固策略；因此**真实服务器的认证链路**仍需在你的 NAS/Samba 上验证一次
+    （`npm run test:smb:live`）。失败时界面会显示 `命令 @状态码`，便于定位。
   - 只实现 SMB 2.0.2 / 2.1：不支持 3.x 的 AES-CMAC 签名与加密，也不支持 Kerberos。
   - 不支持 DFS、写操作、compound 请求；大文件按 1MB 分块 READ，已满足随机读需求。
 - 调试建议：`Logger` 已输出 NEGOTIATE / 会话建立结果；失败时先看 `kind`（AUTH/SERVER/NETWORK）。
@@ -188,5 +200,28 @@
   （相对导入自动补 `.ets`、`@kit.ArkTS` 映射到 Node 自带实现），所以测试不需要设备或 ArkUI 运行时。
 - CI：`ci.yml` 与 `release.yml` 均包含"单元测试（纯逻辑）"job，Release 需测试通过才构建发布。
 - `scripts/test/run-viewer.mjs`：无头 Chrome 真实渲染 pdf/docx/xlsx/pptx 四个页面（CI 每次运行）。
-- `scripts/test/run-smb-smoke.mjs`：对着真实 SMB 服务端做协议冒烟（本地手动运行）。
+- `test/smoke/smb.server.ts` + `smb.conformance.ts`：按规范实现的 SMB2 测试服务端 + 一致性测试
+  （`npm run test:smb`，CI 运行）；
+- `test/smoke/webdav.smoke.ts`：本地起最小 WebDAV 服务端，验证 PROPFIND 与 Range 读取
+  （`npm run test:webdav`，CI 运行）；
+- `scripts/test/run-smb-smoke.mjs`：也可以指向真实 SMB 服务端做冒烟（`npm run test:smb:live`）。
 - 不在单测范围内（必须真机）：播放器、TCP 局域网服务、Web 文档预览的真机行为、Picker、焦点走查。
+
+## 14. 图片预览为什么改成"解码成 PixelMap"
+
+v1.4.1 之前，远程图片是先把字节落到缓存文件，再把**裸沙箱路径**交给 `Image()`。
+真机上对部分来源会出现"图片加载不出来"（`Image()` 对裸路径/URI 的解析不稳定），
+而且旧实现里 `RemoteCache.download()` 无论收到多少字节都会把条目标记为"缓存完整"，
+一旦某次读到 0 字节，这个坏缓存会被永久命中。
+
+现在的链路：
+1. 远程来源 `materializeToPath()` → 缓存文件（新增完整性校验：空数据或与 PROPFIND 声明大小
+   不一致则丢弃并报"缓存读写失败"，不会再污染缓存）；
+2. `ImageLoader.fromPath()` 用 `image.createImageSource(path).createPixelMap(desiredSize)` 解码，
+   按最长边 2400px 降采样，控制内存；
+3. 路径解码失败时退回 `readDocument()` 读字节 + `ImageSource.fromBytes()`；
+4. `Image(pixelMap)` 渲染 —— 不再依赖 ArkUI 对裸路径的解析；
+5. 页面销毁/切图时 `PixelMap.release()`。
+
+WebDAV 侧同时加固：`readRange` 兼容服务端返回字符串而非 ArrayBuffer 的情况，
+空数据会打日志而不是静默返回空缓冲。
