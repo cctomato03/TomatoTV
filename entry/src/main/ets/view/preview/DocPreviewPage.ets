@@ -25,7 +25,7 @@ enum DocStage {
  *
  * 渲染方式：应用内离线渲染（rawfile 内置 pdf.js / docx-preview+JSZip / SheetJS），
  * 通过 Web 组件加载本地页面，文档字节由 onInterceptRequest 注入，全程无外发请求。
- * PPTX 目前没有可离线集成的渲染库，降级为「用其他应用打开」并保留文件信息。
+ * PPTX 使用 pptx-preview（UMD，内置 JSZip），同样离线渲染；渲染失败会提示并保留系统打开方式。
  */
 @Component
 export struct DocPreviewPage {
@@ -48,7 +48,7 @@ export struct DocPreviewPage {
 
   private supportsInApp(): boolean {
     return this.param.kind === PreviewKind.PDF || this.param.kind === PreviewKind.DOCX ||
-      this.param.kind === PreviewKind.XLSX;
+      this.param.kind === PreviewKind.XLSX || this.param.kind === PreviewKind.PPTX;
   }
 
   private kindLabel(): string {
@@ -108,6 +108,9 @@ export struct DocPreviewPage {
       } else if (this.param.kind === PreviewKind.DOCX) {
         this.viewerSrc = $rawfile('viewer/docx/index.html');
         this.docMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      } else if (this.param.kind === PreviewKind.PPTX) {
+        this.viewerSrc = $rawfile('viewer/pptx/index.html');
+        this.docMime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
       } else {
         this.viewerSrc = $rawfile('viewer/sheet/index.html');
         this.docMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=6">
+  <title>PowerPoint 预览</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #FFFBF8; }
+    #status { font: 14px -apple-system, "HarmonyOS Sans", sans-serif; color: #7A6A63; padding: 32px 20px; text-align: center; }
+    #host { padding: 8px 4px 24px; }
+    .pptx-preview-wrapper { background: transparent !important; }
+    .pptx-preview-slide-wrapper { margin: 0 auto 10px !important; box-shadow: 0 1px 3px rgba(36, 27, 24, .14); border-radius: 8px; overflow: hidden; }
+  </style>
+  <script>
+    // pptx-preview 的 UMD 会把 browserify 垫片挂到全局，这里给出兜底，避免 WebView 下取到 undefined 抛错
+    window.require$$0 = window.require$$0 || {};
+    window.require$$1 = window.require$$1 || {};
+    window.require$$2 = window.require$$2 || {};
+  </script>
+  <script src="pptx-preview.umd.js"></script>
+</head>
+<body>
+<div id="status">正在解析演示文稿…</div>
+<div id="host"></div>
+<script>
+  (function () {
+    var DOC_URL = window.TOMATO_DOC_URL || 'https://tomato.doc.local/doc';
+    var status = document.getElementById('status');
+    var host = document.getElementById('host');
+
+    function fail(message) {
+      status.textContent = message;
+      status.style.display = '';
+    }
+
+    async function boot() {
+      if (typeof pptxPreview === 'undefined' || typeof pptxPreview.init !== 'function') {
+        fail('渲染库未加载');
+        return;
+      }
+      try {
+        var response = await fetch(DOC_URL);
+        var buffer = await response.arrayBuffer();
+        var width = Math.min(Math.max(window.innerWidth - 16, 320), 1280);
+        var previewer = pptxPreview.init(host, {
+          width: width,
+          height: Math.round(width * 9 / 16),
+          mode: 'list'
+        });
+        await previewer.preview(buffer);
+        var slides = host.querySelectorAll('.pptx-preview-slide-wrapper, .pptx-preview-slide');
+        if (slides.length === 0) {
+          fail('演示文稿内容为空或格式不受支持');
+          return;
+        }
+        status.textContent = '';
+        status.style.display = 'none';
+      } catch (error) {
+        fail('无法渲染该演示文稿：' + (error && error.message ? error.message : error));
+      }
+    }
+
+    boot();
+  })();
+</script>
+</body>
+</html>

@@ -24,7 +24,7 @@
 <div id="sheet"></div>
 <script>
   (function () {
-    var DOC_URL = 'https://tomato.doc.local/doc';
+    var DOC_URL = window.TOMATO_DOC_URL || 'https://tomato.doc.local/doc';
     var MAX_ROWS = 2000;
     var status = document.getElementById('status');
     var tabs = document.getElementById('tabs');

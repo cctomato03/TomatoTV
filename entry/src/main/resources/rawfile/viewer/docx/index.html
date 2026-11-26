@@ -19,7 +19,7 @@
 <div id="root"></div>
 <script>
   (function () {
-    var DOC_URL = 'https://tomato.doc.local/doc';
+    var DOC_URL = window.TOMATO_DOC_URL || 'https://tomato.doc.local/doc';
     var status = document.getElementById('status');
     var root = document.getElementById('root');
 

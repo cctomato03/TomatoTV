@@ -17,8 +17,8 @@
 <div id="pages"></div>
 <script>
   (function () {
-    var DOC_URL = 'https://tomato.doc.local/doc';
-    var WORKER_URL = 'https://tomato.doc.local/worker';
+    var DOC_URL = window.TOMATO_DOC_URL || 'https://tomato.doc.local/doc';
+    var WORKER_URL = window.TOMATO_WORKER_URL || 'https://tomato.doc.local/worker';
     var MAX_PAGES = 120;
     var status = document.getElementById('status');
     var container = document.getElementById('pages');
