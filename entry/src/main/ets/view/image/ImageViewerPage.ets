@@ -1,5 +1,6 @@
 import { image } from '@kit.ImageKit';
-import { common } from '@kit.AbilityKit';
+import { pasteboard } from '@kit.BasicServicesKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { promptAction } from '@kit.ArkUI';
 import { AppContainer } from '../../app/AppContainer';
 import { FileEntry, FileSorter } from '../../model/FileEntry';
@@ -12,6 +13,7 @@ import { ImageSlide } from '../../components/ImageSlide';
 import { ImageLoader } from '../../utils/ImageLoader';
 import { ImageMemoryCache } from '../../utils/ImageMemoryCache';
 import { Logger } from '../../utils/Logger';
+import { WindowTheme } from '../../utils/WindowTheme';
 
 const DECODE_MAX_EDGE: number = 2400;
 const MAX_IMAGE_BYTES: number = 64 * 1024 * 1024;
@@ -67,14 +69,29 @@ export struct ImageViewerPage {
   private baseScale: number = 1;
   private baseX: number = 0;
   private baseY: number = 0;
+  private sizes: Map<string, number> = new Map<string, number>();
+  private metaToken: number = 0;
 
   aboutToAppear(): void {
+    WindowTheme.light();
+    // 像素缓存由 ImageMemoryCache 统一按 LRU 管理，退出查看器不清空，
+    // 这样再次打开同一张图/相邻图时不会重新解码和请求。
     ImageMemoryCache.get().setLimit(6);
     this.loadSiblings();
   }
 
   aboutToDisappear(): void {
-    ImageMemoryCache.get().clearAll();
+    WindowTheme.light();
+  }
+
+  private sizeOf(path: string): number {
+    const known: number | undefined = this.sizes.get(path);
+    return known === undefined ? this.param.size : known;
+  }
+
+  private currentSize(): number {
+    const path: string = this.paths.length > 0 ? this.paths[this.index] : this.param.path;
+    return this.sizeOf(path);
   }
 
   private async loadSiblings(): Promise<void> {
@@ -86,6 +103,7 @@ export struct ImageViewerPage {
     this.sourceRef = source;
     let images: string[] = [];
     let current: number = 0;
+    this.sizes = new Map<string, number>();
     try {
       const parent: string = ImageViewerPage.parentOf(this.param.path);
       const entries: FileEntry[] = await this.container.repository!.list(source, parent);
@@ -96,6 +114,7 @@ export struct ImageViewerPage {
           if (entry.path === this.param.path) {
             current = images.length;
           }
+          this.sizes.set(entry.path, entry.size);
           images.push(entry.path);
         }
       }
@@ -143,10 +162,11 @@ export struct ImageViewerPage {
           continue;
         }
         const path: string = this.paths[target];
-        if (cache.peek(path) !== null) {
+        const key: string = ImageMemoryCache.keyOf(this.sourceRef.id, path);
+        if (cache.peek(key) !== null) {
           continue;
         }
-        cache.ensure(path, () => this.decodeAt(path)).then((pixelMap: image.PixelMap | null) => {
+        cache.ensure(key, () => this.decodeAt(path)).then((pixelMap: image.PixelMap | null) => {
           void pixelMap;
         }).catch((err: Error) => {
           Logger.warn('ImageViewerPage', '预加载相邻图片失败');
@@ -164,7 +184,7 @@ export struct ImageViewerPage {
       name: ImageViewerPage.nameOf(path),
       path: path,
       isDirectory: false,
-      size: this.param.size,
+      size: this.sizeOf(path),
       lastModified: 0,
       mimeType: '',
       kind: this.param.kind
@@ -192,108 +212,111 @@ export struct ImageViewerPage {
     this.readMetadata(path);
   }
 
+  private static readProperty(source: image.ImageSource, key: image.PropertyKey): Promise<string> {
+    return source.getImageProperty(key)
+      .then((value: string) => value.length > 0 ? value.trim() : '')
+      .catch((): string => '');
+  }
+
   /**
    * 读取元数据（尺寸 / 拍摄时间 / 作者 / 版权 / 作者链接）。
    *
-   * 统一从"文件字节"建 ImageSource：远程来源的缓存文件没有扩展名、
-   * 或本机 Picker URI 直接当路径用，都可能让 createImageSource(path) 失败，
-   * 一旦失败就既没有尺寸也没有作者链接（表现为"链接按钮不显示"）。
+   * 远程图片由 RemoteCache 物化成缓存文件后按 fd 读取，不再为元数据重新走网络；
+   * 每个属性单独 catch，避免某一个字段缺失导致整组信息都拿不到。
    */
-  private readMetadata(path: string): void {
+  private async readMetadata(path: string): Promise<void> {
     const repository = this.container.repository;
     if (repository === null) {
       return;
     }
+    const token: number = this.metaToken + 1;
+    this.metaToken = token;
     const entry: FileEntry = {
       name: ImageViewerPage.nameOf(path),
       path: path,
       isDirectory: false,
-      size: this.param.size,
+      size: this.sizeOf(path),
       lastModified: 0,
       mimeType: '',
       kind: this.param.kind
     };
-    repository.readDocument(this.sourceRef, entry, MAX_IMAGE_BYTES).then((bytes: ArrayBuffer) => {
-      if (bytes.byteLength === 0) {
-        Logger.warn('ImageViewerPage', '读不到图片字节，跳过元数据');
+    let localPath: string = '';
+    try {
+      localPath = await repository.materializeToPath(this.sourceRef, entry);
+    } catch (err) {
+      Logger.warn('ImageViewerPage', '图片缓存/读取失败，跳过元数据');
+      return;
+    }
+    let imageSource: image.ImageSource | null = null;
+    let file: fs.File | null = null;
+    try {
+      file = fs.openSync(localPath, fs.OpenMode.READ_ONLY);
+      imageSource = image.createImageSource(file.fd);
+      const pending: image.ImageSource = imageSource;
+      const info: image.ImageInfo = await pending.getImageInfo();
+      const takenAt: string = await ImageViewerPage.readProperty(pending, image.PropertyKey.DATE_TIME_ORIGINAL);
+      const author: string = await ImageViewerPage.readProperty(pending, image.PropertyKey.ARTIST);
+      const copyright: string = await ImageViewerPage.readProperty(pending, image.PropertyKey.COPYRIGHT);
+      const description: string = await ImageViewerPage.readProperty(pending, image.PropertyKey.IMAGE_DESCRIPTION);
+      const comment: string = await ImageViewerPage.readProperty(pending, image.PropertyKey.USER_COMMENT);
+      if (token !== this.metaToken) {
         return;
       }
-      let imageSource: image.ImageSource | null = null;
-      try {
-        imageSource = image.createImageSource(bytes);
-        const pending: image.ImageSource = imageSource;
-        pending.getImageInfo().then((pixelInfo: image.ImageInfo) => {
-          this.info = {
-            width: pixelInfo.size.width,
-            height: pixelInfo.size.height,
-            format: this.info.format,
-            takenAt: this.info.takenAt,
-            author: this.info.author,
-            copyright: this.info.copyright,
-            link: this.info.link
-          };
-        }).catch((err: Error) => {
-          Logger.warn('ImageViewerPage', '读取图片尺寸失败');
-        });
-        const properties: Promise<string>[] = [
-          pending.getImageProperty(image.PropertyKey.DATE_TIME_ORIGINAL),
-          pending.getImageProperty(image.PropertyKey.ARTIST),
-          pending.getImageProperty(image.PropertyKey.COPYRIGHT),
-          pending.getImageProperty(image.PropertyKey.IMAGE_DESCRIPTION)
-        ];
-        Promise.all(properties).then((values: string[]) => {
-          const author: string = values[1] === undefined ? '' : values[1];
-          const copyright: string = values[2] === undefined ? '' : values[2];
-          const description: string = values[3] === undefined ? '' : values[3];
-          // 链接按"作者 → 版权 → 图片描述"的顺序找；都必须是带协议的 URL
-          let link: string = SafeLink.firstUrlAnyScheme(author);
-          if (link.length === 0) {
-            link = SafeLink.firstUrlAnyScheme(copyright);
-          }
-          if (link.length === 0) {
-            link = SafeLink.firstUrlAnyScheme(description);
-          }
-          Logger.info('ImageViewerPage',
-            `元数据 author=${author} copyright=${copyright} link=${link}`);
-          this.info = {
-            width: this.info.width,
-            height: this.info.height,
-            format: this.info.format,
-            takenAt: values[0] === undefined ? '' : values[0],
-            author: author,
-            copyright: copyright,
-            link: link
-          };
-          try {
-            pending.release();
-          } catch (releaseErr) {
-            Logger.warn('ImageViewerPage', '释放 ImageSource 失败');
-          }
-        }).catch((err: Error) => {
-          Logger.warn('ImageViewerPage', '读取图片元数据失败');
-          try {
-            pending.release();
-          } catch (releaseErr) {
-            Logger.warn('ImageViewerPage', '释放 ImageSource 失败');
-          }
-        });
-      } catch (err) {
-        Logger.warn('ImageViewerPage', '创建 ImageSource 失败');
+      // 链接按"作者 → 版权 → 图片描述 → 用户备注"的顺序找
+      let link: string = SafeLink.firstUrlAnyScheme(author);
+      if (link.length === 0) {
+        link = SafeLink.firstUrlAnyScheme(copyright);
       }
-    }).catch((err: Error) => {
-      Logger.warn('ImageViewerPage', '读取图片字节失败，跳过元数据');
-    });
+      if (link.length === 0) {
+        link = SafeLink.firstUrlAnyScheme(description);
+      }
+      if (link.length === 0) {
+        link = SafeLink.firstUrlAnyScheme(comment);
+      }
+      this.info = {
+        width: info.size.width,
+        height: info.size.height,
+        format: ImageViewerPage.extensionOf(path),
+        takenAt: takenAt,
+        author: author,
+        copyright: copyright,
+        link: link
+      };
+      Logger.info('ImageViewerPage',
+        `元数据 ${info.size.width}x${info.size.height} author=${author} copyright=${copyright} link=${link}`);
+    } catch (err) {
+      Logger.warn('ImageViewerPage', '读取图片元数据失败');
+    } finally {
+      if (imageSource !== null) {
+        try {
+          await imageSource.release();
+        } catch (releaseErr) {
+          Logger.warn('ImageViewerPage', '释放 ImageSource 失败');
+        }
+      }
+      if (file !== null) {
+        try {
+          fs.closeSync(file);
+        } catch (closeErr) {
+          Logger.warn('ImageViewerPage', '关闭图片文件失败');
+        }
+      }
+    }
   }
 
   /**
-   * 右下角"链接"按钮的目标：只取图片元数据里"作者"字段中的链接
-   * （通常是打开某个 App 的 URL），不再是图片自身的地址。
+   * 右下角"链接"按钮的目标：优先取元数据里"作者"字段中的链接
+   * （通常是打开某个 App 的 URL），其次回退到版权字段里的链接。
    */
   private linkTarget(): string {
-    return this.info.link;
+    if (this.info.author.length > 0) {
+      return this.info.author;
+    }
+    return SafeLink.firstUrlAnyScheme(this.info.copyright);
   }
 
-  private async openLink(): Promise<void> {
+  /** 复制链接到系统剪贴板，不唤起外部应用 */
+  private async copyLink(): Promise<void> {
     let target: string = this.linkTarget();
     if (target.length === 0) {
       // 元数据可能还没读回来：再取一次
@@ -304,21 +327,20 @@ export struct ImageViewerPage {
       promptAction.showToast({ message: '这张图片没有作者链接' });
       return;
     }
-    const context: common.UIAbilityContext = this.container.requireContext();
-    const opened: boolean = await SafeLink.openUnrestricted(context, target);
-    if (!opened) {
-      promptAction.showToast({ message: '没有应用可以响应此链接' });
+    try {
+      const data: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, target);
+      await pasteboard.getSystemPasteboard().setData(data);
+      promptAction.showToast({ message: '链接已复制' });
+    } catch (err) {
+      Logger.warn('ImageViewerPage', '复制链接失败');
+      promptAction.showToast({ message: '复制失败' });
     }
   }
 
   /** 作者链接为空时，重新读一次元数据（切图后元数据是异步到达的） */
   private async reloadMetadataIfNeeded(): Promise<void> {
     const path: string = this.paths.length > 0 ? this.paths[this.index] : this.param.path;
-    this.readMetadata(path);
-    // 给元数据一个短暂的落地时间
-    await new Promise<void>((resolve: () => void) => {
-      setTimeout(() => resolve(), 400);
-    });
+    await this.readMetadata(path);
   }
 
   private resetZoom(): void {
@@ -340,7 +362,7 @@ export struct ImageViewerPage {
                 path: item,
                 source: this.sourceRef,
                 kind: this.param.kind,
-                fileSize: this.param.size,
+                fileSize: this.sizeOf(item),
                 active: itemIndex === this.index,
                 zoomScale: this.zoomScale,
                 offsetX: this.offsetX,
@@ -400,43 +422,49 @@ export struct ImageViewerPage {
             )
           )
         } else {
-          LoadingProgress()
-            .width(44)
-            .height(44)
-            .color(Color.White)
+          Stack({ alignContent: Alignment.Center }) {
+            LoadingProgress()
+              .width(44)
+              .height(44)
+              .color($r('app.color.brand'))
+          }
+          .width('100%')
+          .height('100%')
+          .hitTestBehavior(HitTestMode.None)
         }
 
-        // 顶部：返回 / 页码 / 信息
+        // 顶部：返回 / 居中文件名 / 信息
         Row({ space: 8 }) {
           Button({ type: ButtonType.Circle }) {
             SymbolGlyph(Symbols.back())
               .fontSize(20)
-              .fontColor([Color.White])
+              .fontColor([$r('app.color.text_primary')])
           }
           .width(40)
           .height(40)
-          .backgroundColor($r('app.color.player_scrim'))
+          .padding(0)
+          .backgroundColor($r('app.color.surface_card'))
           .onClick(() => this.stack.pop())
 
           Blank()
 
-          if (this.paths.length > 1) {
-            Text(`${Math.min(this.index + 1, this.paths.length)} / ${this.paths.length}`)
-              .fontSize(12)
-              .fontColor(Color.White)
-              .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-              .backgroundColor($r('app.color.player_scrim'))
-              .borderRadius(12)
-          }
+          Text(this.paths.length > 0 ? ImageViewerPage.nameOf(this.paths[this.index]) : this.param.name)
+            .fontSize(15)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .textAlign(TextAlign.Center)
+            .layoutWeight(1)
 
           Button({ type: ButtonType.Circle }) {
             SymbolGlyph(Symbols.info())
               .fontSize(18)
-              .fontColor([Color.White])
+              .fontColor([$r('app.color.text_primary')])
           }
           .width(40)
           .height(40)
-          .backgroundColor($r('app.color.player_scrim'))
+          .padding(0)
+          .backgroundColor($r('app.color.surface_card'))
           .onClick(() => {
             this.showInfo = true;
           })
@@ -446,31 +474,53 @@ export struct ImageViewerPage {
         .padding({ left: 12, right: 12, top: 12 })
         .position({ x: 0, y: 0 })
 
-        // 右下角：链接（常显，点击时再判断有没有作者链接）
-        Button({ type: ButtonType.Circle }) {
-          SymbolGlyph(Symbols.link())
-            .fontSize(20)
-            .fontColor([Color.White])
+        // 底部居中：图片序号 / 总数
+        Stack({ alignContent: Alignment.Bottom }) {
+          if (this.paths.length > 1) {
+            Text(`${Math.min(this.index + 1, this.paths.length)} / ${this.paths.length}`)
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .padding({ left: 12, right: 12, top: 5, bottom: 5 })
+              .backgroundColor($r('app.color.surface_card'))
+              .borderRadius(14)
+              .margin({ bottom: 28 })
+          }
         }
-        .width(44)
-        .height(44)
-        .backgroundColor($r('app.color.brand'))
-        .margin({ right: 16, bottom: 24 })
-        .align(Alignment.BottomEnd)
-        .onClick(() => {
-          this.openLink();
-        })
-        .accessibilityText('打开图片链接')
+        .width('100%')
+        .height('100%')
+        .hitTestBehavior(HitTestMode.None)
+
+        // 右下角：链接（常显，点击时再判断有没有作者链接）
+        Stack({ alignContent: Alignment.BottomEnd }) {
+          Button({ type: ButtonType.Circle }) {
+            SymbolGlyph(Symbols.link())
+              .fontSize(20)
+              .fontColor([Color.White])
+          }
+          .width(44)
+          .height(44)
+          .padding(0)
+          .backgroundColor($r('app.color.brand'))
+          .margin({ right: 16, bottom: 24 })
+          .onClick(() => {
+            this.copyLink();
+          })
+          .accessibilityText('复制图片链接')
+        }
+        .width('100%')
+        .height('100%')
+        .hitTestBehavior(HitTestMode.None)
       }
       .width('100%')
       .height('100%')
-      .backgroundColor(Color.Black)
+      .backgroundColor($r('app.color.surface'))
     }
     .hideTitleBar(true)
-    .backgroundColor(Color.Black)
+    .backgroundColor($r('app.color.surface'))
     .bindSheet($$this.showInfo, this.infoSheet(), {
       height: 460,
       dragBar: true,
+      showClose: false,
       backgroundColor: $r('app.color.surface')
     })
     .onBackPressed((): boolean => false)
@@ -510,7 +560,7 @@ export struct ImageViewerPage {
           .fontSize(13)
           .fontColor($r('app.color.text_secondary'))
           .layoutWeight(1)
-        Text(Fmt.size(this.param.size))
+        Text(Fmt.size(this.currentSize()))
           .fontSize(13)
           .fontColor($r('app.color.text_primary'))
       }
@@ -523,18 +573,6 @@ export struct ImageViewerPage {
         Text(this.info.takenAt.length > 0 ? this.info.takenAt : '未知')
           .fontSize(13)
           .fontColor($r('app.color.text_primary'))
-      }
-      .width('100%')
-      Row() {
-        Text('作者')
-          .fontSize(13)
-          .fontColor($r('app.color.text_secondary'))
-          .layoutWeight(1)
-        Text(this.info.author.length > 0 ? this.info.author : '未知')
-          .fontSize(13)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       .width('100%')
       if (this.linkTarget().length > 0) {
@@ -550,14 +588,14 @@ export struct ImageViewerPage {
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .copyOption(CopyOptions.LocalDevice)
             .width('100%')
-          Button('打开链接')
+          Button('复制链接')
             .type(ButtonType.Capsule)
             .height(36)
             .backgroundColor($r('app.color.brand'))
             .fontColor(Color.White)
             .fontSize(13)
             .onClick(() => {
-              this.openLink();
+              this.copyLink();
             })
         }
         .width('100%')

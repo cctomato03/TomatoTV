@@ -6,6 +6,7 @@ import { BusKeys, EventBus } from '../../utils/EventBus';
 import { Routes } from '../../navigation/AppNav';
 import { Symbols } from '../../components/Symbols';
 import { Layout } from '../../utils/Breakpoint';
+import { WindowTheme } from '../../utils/WindowTheme';
 
 const APP_VERSION: string = '1.0.0';
 
@@ -20,6 +21,7 @@ export struct SettingsPage {
   private container: AppContainer = AppContainer.get();
 
   aboutToAppear(): void {
+    WindowTheme.light();
     const settings = this.container.settings();
     this.viewMode = settings.viewMode;
     this.sortMode = settings.sortMode;

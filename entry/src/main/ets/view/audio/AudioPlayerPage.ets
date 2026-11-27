@@ -12,6 +12,7 @@ import { PlayableMedia } from '../../data/fs/FileSystemClient';
 import { Fmt } from '../../utils/Format';
 import { Symbols } from '../../components/Symbols';
 import { Logger } from '../../utils/Logger';
+import { WindowTheme } from '../../utils/WindowTheme';
 
 /** 音频播放页（规范 §7.11）：当前目录播放列表、封面、歌词、后台播放 */
 @Component
@@ -20,9 +21,11 @@ export struct AudioPlayerPage {
   param: MediaParam = NavDefaults.media();
 
   @State audioState: AudioState = MediaDefaults.audioState();
-  @State showPlaylist: boolean = false;
-  @State showLyrics: boolean = false;
+  @State showInfo: boolean = false;
+  @State sheetMode: string = 'none';
   @State speedLabel: string = '1x';
+  @State infoFormat: string = '';
+  @State infoSize: number = 0;
 
   private engine: AudioEngine = new AudioEngine();
   private container: AppContainer = AppContainer.get();
@@ -32,11 +35,12 @@ export struct AudioPlayerPage {
   private playlistEntries: FileEntry[] = [];
 
   aboutToAppear(): void {
+    WindowTheme.light();
     this.engine.onChange((state: AudioState) => {
       this.audioState = state;
       this.speedLabel = PlaybackSpeeds.label(state.speed);
-      // 流式播放失败（部分编码/服务端不支持 Range 流）→ 自动改用整文件缓存再播一次
-      if (state.lyricsError !== null && this.usedStream && !this.retriedCache) {
+      // 只有播放器本身失败才回退到整文件缓存；歌词缺失/查询失败不触发回退
+      if (state.playbackError !== null && this.usedStream && !this.retriedCache) {
         this.retriedCache = true;
         Logger.warn('AudioPlayerPage', '流式播放失败，回退为本地缓存播放');
         this.playIndex(this.audioState.playlistIndex);
@@ -55,6 +59,7 @@ export struct AudioPlayerPage {
   }
 
   aboutToDisappear(): void {
+    WindowTheme.light();
     this.engine.release();
   }
 
@@ -74,20 +79,25 @@ export struct AudioPlayerPage {
           if (entry.path === this.param.path) {
             index = playlist.length;
           }
-          playlist.push({ path: entry.path, name: entry.name });
+          playlist.push({ path: entry.path, name: entry.name, size: entry.size });
           this.playlistEntries.push(entry);
         }
       }
       if (playlist.length === 0) {
-        playlist.push({ path: this.param.path, name: this.param.name });
+        playlist.push({ path: this.param.path, name: this.param.name, size: this.param.size });
       }
       this.engine.setPlaylistState(playlist, index);
       await this.playIndex(index);
     } catch (err) {
       Logger.error('AudioPlayerPage', '构建播放列表失败', err as Error);
-      this.engine.setPlaylistState([{ path: this.param.path, name: this.param.name }], 0);
+      this.engine.setPlaylistState([{ path: this.param.path, name: this.param.name, size: this.param.size }], 0);
       await this.playIndex(0);
     }
+  }
+
+  private static extensionOf(name: string): string {
+    const dot: number = name.lastIndexOf('.');
+    return dot > 0 && dot < name.length - 1 ? name.substring(dot + 1).toUpperCase() : '';
   }
 
   private static parentOf(path: string): string {
@@ -116,13 +126,17 @@ export struct AudioPlayerPage {
     this.loadToken = token;
     this.engine.resetForTrack(target);
     const item: PlaylistItem = playlist[target];
+    this.infoSize = item.size;
+    this.infoFormat = AudioPlayerPage.extensionOf(item.name);
     const allowStream: boolean = !this.retriedCache;
+    // 只有"这一次重试"走缓存；后续切歌重新尝试流式播放
+    this.retriedCache = false;
     try {
       const playable: PlayableMedia = await this.container.repository!.playable(source, {
         name: item.name,
         path: item.path,
         isDirectory: false,
-        size: 0,
+        size: item.size,
         lastModified: 0,
         mimeType: '',
         kind: PreviewKind.AUDIO
@@ -133,8 +147,14 @@ export struct AudioPlayerPage {
         return;
       }
       await this.engine.open(playable);
+      if (token !== this.loadToken) {
+        return;
+      }
+      // 先落到当前曲目的文件名，元数据解析完成后再覆盖
       this.engine.setMetadata({ title: item.name, artist: '', album: '', albumArt: null });
-      const metadata: AudioMetadata = await AudioEngine.readMetadata(playable, item.name);
+      const metadata: AudioMetadata = this.usedStream
+        ? await this.readStreamMetadata(source, item, playable)
+        : await AudioEngine.readMetadata(playable, item.name);
       if (token !== this.loadToken) {
         return;
       }
@@ -153,19 +173,52 @@ export struct AudioPlayerPage {
     }
   }
 
+  /** 流式音频：只读文件头尾片段解析标题/艺术家/封面，不整文件下载 */
+  private async readStreamMetadata(source: FileSource, item: PlaylistItem,
+    playable: PlayableMedia): Promise<AudioMetadata> {
+    const fallback: AudioMetadata = { title: item.name, artist: '', album: '', albumArt: null };
+    const client = await this.container.repository!.clientFor(source);
+    const fileSize: number = item.size > 0 ? item.size : 0;
+    const headLength: number = fileSize > 0 ? Math.min(fileSize, 512 * 1024) : 512 * 1024;
+    const tailLength: number = fileSize > 0 ? Math.min(fileSize, 256 * 1024) : 0;
+    try {
+      const head: ArrayBuffer = await client.readRange(item.path, 0, headLength);
+      let tail: ArrayBuffer = new ArrayBuffer(0);
+      if (tailLength > 0 && fileSize > headLength) {
+        tail = await client.readRange(item.path, fileSize - tailLength, tailLength);
+      }
+      return await AudioEngine.readMetadataFromParts(head, tail, fileSize, item.name);
+    } catch (err) {
+      Logger.warn('AudioPlayerPage', '流式元数据读取失败');
+      void playable;
+      return fallback;
+    }
+  }
+
   build() {
     NavDestination() {
       Stack({ alignContent: Alignment.Bottom }) {
         Column() {
           Row({ space: 8 }) {
             Button({ type: ButtonType.Circle }) {
-              SymbolGlyph(Symbols.back()).fontSize(20).fontColor([Color.White])
+              SymbolGlyph(Symbols.back()).fontSize(20).fontColor([$r('app.color.text_primary')])
             }
             .width(40)
             .height(40)
-            .backgroundColor($r('app.color.player_scrim'))
+            .backgroundColor($r('app.color.surface_card'))
             .onClick(() => this.stack.pop())
             Blank()
+            Button({ type: ButtonType.Circle }) {
+              SymbolGlyph(Symbols.info()).fontSize(20).fontColor([$r('app.color.text_primary')])
+            }
+            .width(40)
+            .height(40)
+            .padding(0)
+            .backgroundColor($r('app.color.surface_card'))
+            .onClick(() => {
+              this.openSheet('info');
+            })
+            .accessibilityText('音频信息')
           }
           .width('100%')
           .padding({ left: 12, right: 12, top: 12 })
@@ -193,10 +246,10 @@ export struct AudioPlayerPage {
             }
 
             Column({ space: 4 }) {
-              Text(this.audioState.title.length > 0 ? this.audioState.title : this.param.name)
+              Text(this.audioState.title.length > 0 ? this.audioState.title : '加载中…')
                 .fontSize(20)
                 .fontWeight(FontWeight.Bold)
-                .fontColor(Color.White)
+                .fontColor($r('app.color.text_primary'))
                 .maxLines(1)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
               Text(this.audioState.artist.length > 0 ?
@@ -241,11 +294,11 @@ export struct AudioPlayerPage {
 
             Row({ space: 32 }) {
               Button({ type: ButtonType.Circle }) {
-                SymbolGlyph(Symbols.previous()).fontSize(26).fontColor([Color.White])
+                SymbolGlyph(Symbols.previous()).fontSize(26).fontColor([$r('app.color.text_primary')])
               }
               .width(56)
               .height(56)
-              .backgroundColor($r('app.color.player_scrim'))
+              .backgroundColor($r('app.color.surface_card'))
               .onClick(() => this.playIndex(this.audioState.playlistIndex - 1))
               .accessibilityText('上一首')
 
@@ -262,11 +315,11 @@ export struct AudioPlayerPage {
               })
 
               Button({ type: ButtonType.Circle }) {
-                SymbolGlyph(Symbols.next()).fontSize(26).fontColor([Color.White])
+                SymbolGlyph(Symbols.next()).fontSize(26).fontColor([$r('app.color.text_primary')])
               }
               .width(56)
               .height(56)
-              .backgroundColor($r('app.color.player_scrim'))
+              .backgroundColor($r('app.color.surface_card'))
               .onClick(() => this.playIndex(this.audioState.playlistIndex + 1))
               .accessibilityText('下一首')
             }
@@ -276,25 +329,25 @@ export struct AudioPlayerPage {
             Row({ space: 12 }) {
               Button(this.speedLabel)
                 .height(34)
-                .backgroundColor($r('app.color.player_scrim'))
-                .fontColor(Color.White)
+                .backgroundColor($r('app.color.surface_card'))
+                .fontColor($r('app.color.text_primary'))
                 .fontSize(13)
                 .bindMenu(this.speedMenu())
               Button('列表')
                 .height(34)
-                .backgroundColor($r('app.color.player_scrim'))
-                .fontColor(Color.White)
+                .backgroundColor($r('app.color.surface_card'))
+                .fontColor($r('app.color.text_primary'))
                 .fontSize(13)
                 .onClick(() => {
-                  this.showPlaylist = true;
+                  this.openSheet('playlist');
                 })
               Button('歌词')
                 .height(34)
-                .backgroundColor($r('app.color.player_scrim'))
-                .fontColor(Color.White)
+                .backgroundColor($r('app.color.surface_card'))
+                .fontColor($r('app.color.text_primary'))
                 .fontSize(13)
                 .onClick(() => {
-                  this.showLyrics = true;
+                  this.openSheet('lyrics');
                 })
             }
             .justifyContent(FlexAlign.Center)
@@ -308,7 +361,7 @@ export struct AudioPlayerPage {
       }
       .width('100%')
       .height('100%')
-      .backgroundColor($r('app.color.player_backdrop'))
+      .backgroundColor($r('app.color.surface'))
       .onKeyEvent((event: KeyEvent) => {
         if (event.type !== KeyType.Down) {
           return;
@@ -319,34 +372,25 @@ export struct AudioPlayerPage {
           this.engine.toggle();
           return;
         }
-        if (code === KeyCode.KEYCODE_DPAD_LEFT) {
-          this.engine.seekTo(this.audioState.positionMs - 10000);
-          return;
-        }
-        if (code === KeyCode.KEYCODE_DPAD_RIGHT) {
-          this.engine.seekTo(this.audioState.positionMs + 10000);
-          return;
-        }
-        if (code === KeyCode.KEYCODE_DPAD_UP) {
+        if (code === KeyCode.KEYCODE_DPAD_LEFT || code === KeyCode.KEYCODE_DPAD_UP) {
           this.playIndex(this.audioState.playlistIndex - 1);
           return;
         }
-        if (code === KeyCode.KEYCODE_DPAD_DOWN) {
+        if (code === KeyCode.KEYCODE_DPAD_RIGHT || code === KeyCode.KEYCODE_DPAD_DOWN) {
           this.playIndex(this.audioState.playlistIndex + 1);
         }
       })
     }
     .hideTitleBar(true)
-    .backgroundColor($r('app.color.player_backdrop'))
-    .bindSheet($$this.showPlaylist, this.playlistSheet(), {
-      height: 420,
+    .backgroundColor($r('app.color.surface'))
+    .bindSheet(this.sheetVisible(), this.audioSheet(), {
+      height: 460,
       dragBar: true,
-      backgroundColor: $r('app.color.surface')
-    })
-    .bindSheet($$this.showLyrics, this.lyricsSheet(), {
-      height: 420,
-      dragBar: true,
-      backgroundColor: $r('app.color.surface')
+      showClose: false,
+      backgroundColor: $r('app.color.surface'),
+      onDisappear: () => {
+        this.openSheet('none');
+      }
     })
     .onBackPressed((): boolean => false)
   }
@@ -359,6 +403,72 @@ export struct AudioPlayerPage {
           .onClick(() => this.engine.setSpeed(speed))
       }, (speed: number) => `sp${speed}`)
     }
+  }
+
+  private sheetVisible(): boolean {
+    return this.sheetMode !== 'none';
+  }
+
+  private openSheet(mode: string): void {
+    this.sheetMode = mode;
+  }
+
+  @Builder
+  audioSheet() {
+    if (this.sheetMode === 'playlist') {
+      this.playlistSheet()
+    } else if (this.sheetMode === 'lyrics') {
+      this.lyricsSheet()
+    } else if (this.sheetMode === 'info') {
+      this.infoSheet()
+    } else {
+      Column() {
+        Text('')
+      }
+      .width('100%')
+      .height(1)
+    }
+  }
+
+  @Builder
+  infoSheet() {
+    Column({ space: 12 }) {
+      Text('音频信息')
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .width('100%')
+      this.infoRow('文件名', this.audioState.title.length > 0 ? this.audioState.title : this.param.name)
+      this.infoRow('艺术家', this.audioState.artist.length > 0 ? this.audioState.artist : '未知')
+      this.infoRow('专辑', this.audioState.album.length > 0 ? this.audioState.album : '未知')
+      this.infoRow('时长', Fmt.duration(this.audioState.durationMs))
+      this.infoRow('大小', Fmt.size(this.infoSize > 0 ? this.infoSize : this.param.size))
+      this.infoRow('格式', this.infoFormat.length > 0 ? this.infoFormat : '未知')
+      this.infoRow('路径', this.param.path)
+    }
+    .width('100%')
+    .padding(16)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  infoRow(label: string, value: string) {
+    Column({ space: 4 }) {
+      Text(label)
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+      Text(value)
+        .fontSize(14)
+        .fontColor($r('app.color.text_primary'))
+        .width('100%')
+        .copyOption(CopyOptions.LocalDevice)
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .padding(12)
+    .backgroundColor($r('app.color.surface_card'))
+    .borderRadius($r('app.float.radius_small'))
   }
 
   @Builder
@@ -392,7 +502,7 @@ export struct AudioPlayerPage {
             .backgroundColor(index === this.audioState.playlistIndex ? $r('app.color.brand_soft') :
               Color.Transparent)
             .onClick(() => {
-              this.showPlaylist = false;
+              this.openSheet('none');
               this.playIndex(index);
             })
           }

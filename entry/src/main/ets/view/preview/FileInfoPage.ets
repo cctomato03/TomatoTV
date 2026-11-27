@@ -8,6 +8,7 @@ import { DocParam, NavDefaults } from '../../navigation/AppNav';
 import { Fmt } from '../../utils/Format';
 import { Symbols } from '../../components/Symbols';
 import { Logger } from '../../utils/Logger';
+import { WindowTheme } from '../../utils/WindowTheme';
 
 /** 文件信息 + 系统“打开方式”（规范 §6 其他类型路由） */
 @Component
@@ -15,6 +16,10 @@ export struct FileInfoPage {
   stack: NavPathStack = new NavPathStack();
   param: DocParam = NavDefaults.doc();
   private container: AppContainer = AppContainer.get();
+
+  aboutToAppear(): void {
+    WindowTheme.light();
+  }
 
   private async openWithSystem(): Promise<void> {
     const context: common.UIAbilityContext = this.container.requireContext();

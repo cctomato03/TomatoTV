@@ -5,20 +5,24 @@ import { FileEntry } from '../../model/FileEntry';
 import { FileKinds } from '../../model/FileKinds';
 import { PlayableMedia } from '../../data/fs/FileSystemClient';
 import { MediaDefaults, PlaybackSpeeds, TrackOption, VideoState } from '../../media/MediaTypes';
-import { VideoEngine } from '../../media/VideoEngine';
+import { VideoEngine, ExternalSubtitle } from '../../media/VideoEngine';
 import { MpegTsDuration } from '../../media/MpegTsDuration';
 import { ClientByteReader } from '../../media/ClientByteReader';
 import { Fmt } from '../../utils/Format';
 import { Symbols } from '../../components/Symbols';
 import { KeyCode } from '@kit.InputKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
+import { deviceInfo, BusinessError } from '@kit.BasicServicesKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { window } from '@kit.ArkUI';
 import { Logger } from '../../utils/Logger';
+import { WindowTheme } from '../../utils/WindowTheme';
 
 const HIDE_DELAY_MS: number = 4000;
 const SEEK_STEP_MS: number = 10000;
 const TOOL_WIDTH: number = 78;
 const TOOL_HEIGHT: number = 38;
+/** 可自动挂载的外挂字幕后缀 */
+const SUBTITLE_EXTENSIONS: string[] = ['srt', 'vtt', 'ass', 'ssa'];
 
 /** 视频播放页（规范 §7.10）：XComponent 全屏画面 + 手势 seek + 倍速/音轨/字幕 */
 @Component
@@ -74,6 +78,7 @@ export struct VideoPlayerPage {
         Logger.warn('VideoPlayerPage', `播放失败: ${state.error}`);
       }
     });
+    WindowTheme.immersive('#000000');
     this.enterLandscape();
   }
 
@@ -82,6 +87,7 @@ export struct VideoPlayerPage {
     this.clearHideTimer();
     this.engine.release();
     this.exitLandscape();
+    WindowTheme.exitImmersive();
   }
 
   /** 进入视频页自动横屏（手机/平板）；智慧屏与 2in1 本身是宽屏，不做旋转 */
@@ -166,7 +172,8 @@ export struct VideoPlayerPage {
       const playable: PlayableMedia = await this.container.repository!.playable(source, entry);
       this.usedStream = playable.url.length > 0;
       Logger.info('VideoPlayerPage', `播放来源: ${this.usedStream ? 'stream ' + playable.url : 'fd ' + playable.fd}`);
-      await this.engine.open(playable, this.param.name, () => this.controller.getXComponentSurfaceId());
+      const subtitles: ExternalSubtitle[] = await this.findExternalSubtitles(source);
+      await this.engine.open(playable, this.param.name, () => this.controller.getXComponentSurfaceId(), subtitles);
       this.scheduleHide();
       if (this.engine.durationMs() <= 0) {
         setTimeout(() => {
@@ -178,6 +185,79 @@ export struct VideoPlayerPage {
     } catch (err) {
       Logger.error('VideoPlayerPage', '打开视频失败', err as Error);
     }
+  }
+
+  /**
+   * 查找同目录下的外挂字幕：与视频同名的 .srt/.vtt/.ass。
+   * 远程来源先把字幕物化成缓存文件再打开 fd（AVPlayer 只接受 fd）。
+   */
+  private async findExternalSubtitles(source: FileSource): Promise<ExternalSubtitle[]> {
+    const repository = this.container.repository;
+    if (repository === null) {
+      return [];
+    }
+    const parent: string = VideoPlayerPage.parentOf(this.param.path);
+    const base: string = VideoPlayerPage.baseName(this.param.name);
+    const result: ExternalSubtitle[] = [];
+    let entries: FileEntry[] = [];
+    try {
+      entries = await repository.list(source, parent);
+    } catch (err) {
+      Logger.warn('VideoPlayerPage', '读取字幕目录失败');
+      return [];
+    }
+    // 同名可能同时存在 srt/ass/vtt：按 SUBTITLE_EXTENSIONS 的优先级只挂载一条
+    for (const wanted of SUBTITLE_EXTENSIONS) {
+      const match: FileEntry | null = VideoPlayerPage.pickSubtitle(entries, base, wanted);
+      if (match === null) {
+        continue;
+      }
+      try {
+        const localPath: string = await repository.materializeToPath(source, match);
+        const file: fs.File = fs.openSync(localPath, fs.OpenMode.READ_ONLY);
+        result.push({
+          path: localPath,
+          name: match.name,
+          label: `外挂 · ${wanted.toUpperCase()}`,
+          fd: file.fd,
+          size: match.size
+        });
+        Logger.info('VideoPlayerPage', `找到外挂字幕 ${match.name}`);
+      } catch (err) {
+        Logger.warn('VideoPlayerPage', `准备外挂字幕失败 ${match.name}`);
+      }
+      break;
+    }
+    return result;
+  }
+
+  private static pickSubtitle(entries: FileEntry[], base: string, extension: string): FileEntry | null {
+    for (const entry of entries) {
+      if (entry.isDirectory) {
+        continue;
+      }
+      const lower: string = entry.name.toLowerCase();
+      const slash: number = lower.lastIndexOf('.');
+      if (slash <= 0) {
+        continue;
+      }
+      if (lower.substring(0, slash) !== base || lower.substring(slash + 1) !== extension) {
+        continue;
+      }
+      return entry;
+    }
+    return null;
+  }
+
+  private static baseName(name: string): string {
+    const dot: number = name.lastIndexOf('.');
+    return (dot > 0 ? name.substring(0, dot) : name).toLowerCase();
+  }
+
+  private static parentOf(path: string): string {
+    const trimmed: string = path.endsWith('/') ? path.substring(0, path.length - 1) : path;
+    const slash: number = trimmed.lastIndexOf('/');
+    return slash > 0 ? trimmed.substring(0, slash) : '/';
   }
 
   private seekBy(deltaMs: number): void {
@@ -209,34 +289,60 @@ export struct VideoPlayerPage {
           })
           .onClick(() => this.toggleControls())
 
-        if (this.seekHint.length > 0) {
-          Text(this.seekHint)
-            .fontSize(15)
-            .fontColor(Color.White)
-            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-            .backgroundColor($r('app.color.player_scrim'))
-            .borderRadius(16)
-        }
-
-        if (this.videoState.loading) {
-          LoadingProgress()
-            .width(48)
-            .height(48)
-            .color(Color.White)
-        }
-
-        if (this.videoState.error !== null && !this.videoState.playing && this.videoState.positionMs === 0) {
-          Column({ space: 12 }) {
-            Text(this.videoState.error)
+        Stack({ alignContent: Alignment.Center }) {
+          if (this.seekHint.length > 0) {
+            Text(this.seekHint)
               .fontSize(15)
               .fontColor(Color.White)
-              .textAlign(TextAlign.Center)
-            Button('返回')
-              .type(ButtonType.Capsule)
-              .backgroundColor($r('app.color.brand'))
-              .onClick(() => this.stack.pop())
+              .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+              .backgroundColor($r('app.color.player_scrim'))
+              .borderRadius(16)
           }
-          .padding(24)
+          // 快进/切轨时的等待反馈：不仅首帧加载，缓冲中也会显示
+          if (this.videoState.loading || this.videoState.buffering) {
+            LoadingProgress()
+              .width(48)
+              .height(48)
+              .color(Color.White)
+          }
+          if (this.videoState.error !== null && !this.videoState.playing && this.videoState.positionMs === 0) {
+            Column({ space: 12 }) {
+              Text(this.videoState.error)
+                .fontSize(15)
+                .fontColor(Color.White)
+                .textAlign(TextAlign.Center)
+              Button('返回')
+                .type(ButtonType.Capsule)
+                .backgroundColor($r('app.color.brand'))
+                .onClick(() => this.stack.pop())
+            }
+            .padding(24)
+          }
+        }
+        .width('100%')
+        .height('100%')
+        .hitTestBehavior(HitTestMode.Transparent)
+
+        // 字幕层：贴近底部、避开工具栏，随 subtitleUpdate 实时更新
+        if (this.videoState.subtitleText.length > 0) {
+          Column() {
+            Text(this.videoState.subtitleText)
+              .fontSize(17)
+              .fontColor(Color.White)
+              .textAlign(TextAlign.Center)
+              .maxLines(3)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .lineHeight(26)
+              .padding({ left: 12, right: 12, top: 4, bottom: 4 })
+              .backgroundColor($r('app.color.player_scrim'))
+              .borderRadius(6)
+              .width('88%')
+          }
+          .width('100%')
+          .height('100%')
+          .justifyContent(FlexAlign.End)
+          .padding({ left: 24, right: 24, bottom: this.controlsVisible ? 104 : 40 })
+          .hitTestBehavior(HitTestMode.None)
         }
 
         if (this.controlsVisible) {
@@ -247,6 +353,7 @@ export struct VideoPlayerPage {
       .width('100%')
       .height('100%')
       .backgroundColor(Color.Black)
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       .onKeyEvent((event: KeyEvent) => {
         if (event.type !== KeyType.Down) {
           return;
@@ -483,7 +590,7 @@ export struct VideoPlayerPage {
   @Builder
   subtitleMenu() {
     Menu() {
-      MenuItem({ content: this.videoState.selectedSubtitleId < 0 ? '✓ 关闭字幕' : '关闭字幕' })
+      MenuItem({ content: this.videoState.selectedSubtitleId === -1 ? '✓ 关闭字幕' : '关闭字幕' })
         .onClick(() => {
           this.engine.selectTrack(-1);
           this.scheduleHide();

@@ -226,9 +226,11 @@ export class MediaStreamServer {
 
   private async sendBody(conn: socket.TCPSocketConnection, client: FileSystemClient, entry: StreamEntry,
     range: RangeSpec, headOnly: boolean): Promise<void> {
-    // 单次响应最多 8MB：播放器 request bytes=0- 时也只回一段，再由它自己续请求，
-    // 避免一次性把整部电影推过去（SMB/FTP 上尤其重要）。
-    const MAX_SPAN: number = 8 * 1024 * 1024;
+    // 单次响应上限：播放器 request bytes=0- 时也只回一段，再由它自己续请求，
+    // 避免一次性把整部电影推过去。高码率视频（4K/Blu-ray 常见 60~100Mbps）
+    // 下 8MB 只够 1 秒左右，seek 后要等好几轮才能填充缓冲，因此放宽到 32MB，
+    // 并按码率自适应：小文件不超过自身大小。
+    const MAX_SPAN: number = 32 * 1024 * 1024;
     let end: number = range.end;
     let isPartial: boolean = range.partial;
     if (end - range.start + 1 > MAX_SPAN) {

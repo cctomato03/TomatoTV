@@ -1,9 +1,24 @@
 {
   "app": {
-    "signingConfigs": [],
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "/Users/apple/.ohos/config/default_TomatoTV_3z3LO9xdJBT4wJRlFEX9GF6d4N2vUNJqKMfIkMaWnXc=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001A6D46C2480A7BF8CA9EACAC1CAF3C8C1804C8929ED2D95BB30BAD03D67B9DBDC875728E95C38B",
+          "profile": "/Users/apple/.ohos/config/default_TomatoTV_3z3LO9xdJBT4wJRlFEX9GF6d4N2vUNJqKMfIkMaWnXc=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "/Users/apple/.ohos/config/default_TomatoTV_3z3LO9xdJBT4wJRlFEX9GF6d4N2vUNJqKMfIkMaWnXc=.p12",
+          "storePassword": "0000001A7403662B587CE74813CCBAAE7E17D845695262D9802E9A34DAA94DE2773994D708F6AC45D3B6"
+        }
+      }
+    ],
     "products": [
       {
         "name": "default",
+        "signingConfig": "default",
         "compatibleSdkVersion": "5.0.0(12)",
         "runtimeOS": "HarmonyOS",
         "buildOption": {
@@ -11,7 +26,8 @@
             "caseSensitiveCheck": true,
             "useNormalizedOHMUrl": true
           }
-        }
+        },
+        "targetSdkVersion": "26.0.1"
       }
     ],
     "buildModeSet": [

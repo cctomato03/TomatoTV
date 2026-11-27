@@ -18,12 +18,14 @@ export interface VideoState {
   subtitleTracks: TrackOption[];
   selectedAudioId: number;
   selectedSubtitleId: number;
+  subtitleText: string;
   error: string | null;
 }
 
 export interface PlaylistItem {
   path: string;
   name: string;
+  size: number;
 }
 
 export interface AudioState {
@@ -41,6 +43,7 @@ export interface AudioState {
   lyrics: string | null;
   lyricsLoading: boolean;
   lyricsError: string | null;
+  playbackError: string | null;
 }
 
 export class MediaDefaults {
@@ -57,6 +60,7 @@ export class MediaDefaults {
       subtitleTracks: [],
       selectedAudioId: -1,
       selectedSubtitleId: -1,
+      subtitleText: '',
       error: null
     };
   }
@@ -76,7 +80,8 @@ export class MediaDefaults {
       playlistIndex: 0,
       lyrics: null,
       lyricsLoading: false,
-      lyricsError: null
+      lyricsError: null,
+      playbackError: null
     };
   }
 }

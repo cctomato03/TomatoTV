@@ -113,7 +113,18 @@ export class FileRepository {
     }
     if (allowStream) {
       const client: FileSystemClient = await this.clientFor(source);
-      const url: string = await MediaStreamServer.get().register(client, source.id, entry.path, entry.size, mimeType);
+      // 调用方可能只传了 path（size=0），流式代理需要真实长度来响应 Range；
+      // 缺失时补一次 stat，否则播放器的 Range 请求会被判成 416。
+      let streamSize: number = entry.size;
+      if (streamSize <= 0) {
+        try {
+          const stat: FileEntry = await client.stat(entry.path);
+          streamSize = stat.size;
+        } catch (err) {
+          Logger.warn('FileRepository', '读取流式播放文件大小失败');
+        }
+      }
+      const url: string = await MediaStreamServer.get().register(client, source.id, entry.path, streamSize, mimeType);
       if (url.length > 0) {
         return { fd: -1, path: '', url: url, mimeType: mimeType };
       }

@@ -6,6 +6,9 @@ import { Fmt } from '../../utils/Format';
 import { Logger } from '../../utils/Logger';
 import { EmptyState } from '../../components/EmptyState';
 import { Symbols } from '../../components/Symbols';
+import { WindowTheme } from '../../utils/WindowTheme';
+
+const MAX_RENDER_LINES: number = 4000;
 
 const MAX_TEXT_BYTES: number = 4 * 1024 * 1024;
 
@@ -15,13 +18,14 @@ export struct TextPreviewPage {
   stack: NavPathStack = new NavPathStack();
   param: DocParam = NavDefaults.doc();
 
-  @State content: string = '';
+  @State lines: string[] = [];
   @State loading: boolean = true;
   @State errorText: string = '';
   @State truncated: boolean = false;
   private container: AppContainer = AppContainer.get();
 
   aboutToAppear(): void {
+    WindowTheme.light();
     this.load();
   }
 
@@ -35,8 +39,11 @@ export struct TextPreviewPage {
     this.loading = true;
     this.errorText = '';
     try {
-      this.content = await this.container.repository!.readText(source, this.param.path, MAX_TEXT_BYTES);
-      this.truncated = this.param.size > MAX_TEXT_BYTES;
+      const content: string = await this.container.repository!.readText(source, this.param.path, MAX_TEXT_BYTES);
+      const all: string[] = content.split('\n');
+      const capped: boolean = all.length > MAX_RENDER_LINES;
+      this.lines = capped ? all.slice(0, MAX_RENDER_LINES) : all;
+      this.truncated = this.param.size > MAX_TEXT_BYTES || capped;
     } catch (err) {
       if (err instanceof FsError) {
         this.errorText = FsErrorText.of(err.kind);
@@ -68,7 +75,7 @@ export struct TextPreviewPage {
         .padding({ left: 16, right: 16, top: 8, bottom: 8 })
 
         if (this.truncated) {
-          Text('文件较大，仅显示前 4MB 内容')
+          Text(this.param.size > MAX_TEXT_BYTES ? '文件较大，仅显示前 4MB 内容' : '文件较大，仅显示前 4000 行')
             .fontSize(12)
             .fontColor($r('app.color.brand'))
             .width('100%')
@@ -86,19 +93,23 @@ export struct TextPreviewPage {
         } else if (this.errorText.length > 0) {
           EmptyState({ icon: Symbols.info(), title: this.errorText })
         } else {
-          Scroll() {
-            Text(this.content)
-              .fontSize(13)
-              .fontFamily('HarmonyOS Sans Mono')
-              .fontColor($r('app.color.text_primary'))
-              .textAlign(TextAlign.Start)
-              .padding(16)
-              .width('100%')
-              .copyOption(CopyOptions.LocalDevice)
+          List() {
+            ForEach(this.lines, (line: string, index: number) => {
+              ListItem() {
+                Text(line.length > 0 ? line : ' ')
+                  .fontSize(13)
+                  .fontFamily('HarmonyOS Sans Mono')
+                  .fontColor($r('app.color.text_primary'))
+                  .textAlign(TextAlign.Start)
+                  .width('100%')
+                  .copyOption(CopyOptions.LocalDevice)
+              }
+              .padding({ left: 16, right: 16 })
+            }, (line: string, index: number) => `${index}`)
           }
           .layoutWeight(1)
           .width('100%')
-          .align(Alignment.Top)
+          .cachedCount(20)
           .scrollBar(BarState.Auto)
         }
       }

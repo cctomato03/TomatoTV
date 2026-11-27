@@ -1,6 +1,6 @@
 import { promptAction } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
-import { fileUri } from '@kit.CoreFileKit';
+import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
 import { AppContainer } from '../../app/AppContainer';
 import { FileSource } from '../../model/FileSource';
 import { PreviewKind } from '../../model/FileKinds';
@@ -10,6 +10,7 @@ import { Fmt } from '../../utils/Format';
 import { Symbols } from '../../components/Symbols';
 import { DocumentWebView } from '../../components/DocumentWebView';
 import { Logger } from '../../utils/Logger';
+import { WindowTheme } from '../../utils/WindowTheme';
 
 /** 单文件预览上限：超过后只提示用其他应用打开，避免大文件占用内存 */
 const MAX_DOC_BYTES: number = 64 * 1024 * 1024;
@@ -39,10 +40,12 @@ export struct DocPreviewPage {
   @State viewerSrc: Resource = $rawfile('viewer/pdf/index.html');
   @State docMime: string = 'application/octet-stream';
   @State openable: boolean = false;
+  @State rendering: boolean = false;
 
   private container: AppContainer = AppContainer.get();
 
   aboutToAppear(): void {
+    WindowTheme.light();
     this.prepare();
   }
 
@@ -95,7 +98,7 @@ export struct DocPreviewPage {
         mimeType: '',
         kind: this.param.kind
       };
-      const bytes: ArrayBuffer = await this.container.repository!.readDocument(source, entry, MAX_DOC_BYTES);
+      const bytes: ArrayBuffer = await this.readDocBytes(source, entry);
       if (bytes.byteLength === 0) {
         this.failWith('文件为空或无法读取');
         return;
@@ -116,10 +119,30 @@ export struct DocPreviewPage {
         this.docMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
       }
       this.stage = DocStage.READY;
+      this.rendering = true;
     } catch (err) {
       Logger.error('DocPreviewPage', '读取文档失败', err as Error);
       this.failWith('缓存读写失败，或文件无法读取');
     }
+  }
+
+  /** 优先走 RemoteCache（远程文件缓存后读本地），避免每次预览都重新下载 */
+  private async readDocBytes(source: FileSource, entry: FileEntry): Promise<ArrayBuffer> {
+    const repository = this.container.repository!;
+    const localPath: string = await repository.materializeToPath(source, entry);
+    const stat: fs.Stat = fs.statSync(localPath);
+    const length: number = stat.size > MAX_DOC_BYTES ? MAX_DOC_BYTES : stat.size;
+    if (length <= 0) {
+      return new ArrayBuffer(0);
+    }
+    const buffer: ArrayBuffer = new ArrayBuffer(length);
+    const file: fs.File = fs.openSync(localPath, fs.OpenMode.READ_ONLY);
+    try {
+      fs.readSync(file.fd, buffer);
+    } finally {
+      fs.closeSync(file);
+    }
+    return buffer;
   }
 
   private loadRawfile(path: string): ArrayBuffer {
@@ -168,17 +191,39 @@ export struct DocPreviewPage {
     NavDestination() {
       Column() {
         if (this.stage === DocStage.READY) {
-          DocumentWebView({
-            src: this.viewerSrc,
-            docBytes: this.docBytes,
-            workerBytes: this.workerBytes,
-            docMime: this.docMime,
-            onFail: () => {
-              this.failWith('无法渲染该文档，请用其他应用打开');
+          Stack({ alignContent: Alignment.Center }) {
+            DocumentWebView({
+              src: this.viewerSrc,
+              docBytes: this.docBytes,
+              workerBytes: this.workerBytes,
+              docMime: this.docMime,
+              onFail: () => {
+                this.failWith('无法渲染该文档，请用其他应用打开');
+              },
+              onPageEnd: () => {
+                this.rendering = false;
+              }
+            })
+              .width('100%')
+              .height('100%')
+            if (this.rendering) {
+              Column({ space: 12 }) {
+                LoadingProgress()
+                  .width(44)
+                  .height(44)
+                  .color($r('app.color.brand'))
+                Text('正在渲染文档…')
+                  .fontSize(13)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .width('100%')
+              .height('100%')
+              .justifyContent(FlexAlign.Center)
+              .backgroundColor($r('app.color.surface'))
             }
-          })
-            .layoutWeight(1)
-            .width('100%')
+          }
+          .layoutWeight(1)
+          .width('100%')
         } else if (this.stage === DocStage.READING) {
           Column({ space: 12 }) {
             LoadingProgress()

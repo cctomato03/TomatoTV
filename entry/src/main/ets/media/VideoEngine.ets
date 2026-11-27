@@ -1,5 +1,6 @@
 import { media } from '@kit.MediaKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { FsErrorText, PlayableMedia } from '../data/fs/FileSystemClient';
 import { MediaDefaults, TrackOption, VideoState } from './MediaTypes';
 import { Logger } from '../utils/Logger';
@@ -8,8 +9,20 @@ type VideoListener = (state: VideoState) => void;
 /** 每次需要时取一次 SurfaceId（XComponent 刚创建时可能还拿不到，需要重试） */
 type SurfaceProvider = () => string;
 
+/** 外挂字幕候选：同目录下与视频同名的 .srt/.vtt/.ass 文件（已打开 fd，AVPlayer 只接受 fd） */
+export interface ExternalSubtitle {
+  path: string;
+  name: string;
+  label: string;
+  fd: number;
+  size: number;
+}
+
 /** 视频播放引擎：AVPlayer + XComponent Surface（规范 §9.1 通用格式路径） */
 export class VideoEngine {
+  /** 外挂字幕在「字幕」菜单里的合成轨道号（真实轨道号由播放器动态分配） */
+  static readonly EXTERNAL_SUBTITLE_INDEX: number = -2;
+
   private player: media.AVPlayer | null = null;
   private state: VideoState = MediaDefaults.videoState('');
   private listener: VideoListener = () => {
@@ -20,6 +33,16 @@ export class VideoEngine {
   private tracksLoaded: boolean = false;
   /** 是否已经开始出画面/出声：已经开始后出现的错误不再当作致命错误（常见于容器里的视频轨不支持） */
   private startedPlayback: boolean = false;
+  /** 外挂字幕本地文件（同目录同名 srt/vtt/ass），prepared 后通过 addSubtitleFromFd 挂载 */
+  private externalSubtitles: ExternalSubtitle[] = [];
+  /** seek 请求进行中：用于点亮"跳转中"提示，seekDone/缓冲结束再熄灭 */
+  private seekPending: boolean = false;
+  /** 切轨后等待重新播放的兜底定时器 */
+  private trackSwitchTimer: number = -1;
+  /** seek 兜底定时器 */
+  private seekTimer: number = -1;
+  /** 外挂字幕只挂载一次（prepared 可能重复回调） */
+  private subtitlesMounted: boolean = false;
 
   onChange(listener: VideoListener): void {
     this.listener = listener;
@@ -38,6 +61,7 @@ export class VideoEngine {
       subtitleTracks: this.state.subtitleTracks,
       selectedAudioId: this.state.selectedAudioId,
       selectedSubtitleId: this.state.selectedSubtitleId,
+      subtitleText: this.state.subtitleText,
       error: this.state.error
     };
   }
@@ -46,13 +70,22 @@ export class VideoEngine {
     this.listener(this.snapshot());
   }
 
-  async open(source: PlayableMedia, title: string, surfaceProvider: SurfaceProvider): Promise<void> {
+  open(source: PlayableMedia, title: string, surfaceProvider: SurfaceProvider,
+    externalSubtitles: ExternalSubtitle[] = []): Promise<void> {
+    return this.openInternal(source, title, surfaceProvider, externalSubtitles);
+  }
+
+  private async openInternal(source: PlayableMedia, title: string, surfaceProvider: SurfaceProvider,
+    externalSubtitles: ExternalSubtitle[]): Promise<void> {
     await this.release();
     this.state = MediaDefaults.videoState(title);
     this.surfaceProvider = surfaceProvider;
     this.surfaceAttached = false;
     this.tracksLoaded = false;
     this.startedPlayback = false;
+    this.externalSubtitles = externalSubtitles;
+    this.seekPending = false;
+    this.subtitlesMounted = false;
     this.emit();
     try {
       const player: media.AVPlayer = await media.createAVPlayer();
@@ -78,6 +111,24 @@ export class VideoEngine {
       });
       player.on('trackChange', (index: number, isSelected: boolean) => {
         this.handleTrackChange(index, isSelected);
+      });
+      // 缓冲事件：BUFFERING_START/END 直接反映卡顿状态（快进等待、弱网缓冲都会触发）
+      player.on('bufferingUpdate', (infoType: media.BufferingInfoType, value: number) => {
+        this.handleBuffering(infoType, value);
+      });
+      // 外挂字幕内容回调：addSubtitleFromFd 后系统按时间轴推送文本
+      player.on('subtitleUpdate', (info: media.SubtitleInfo) => {
+        if (this.state.selectedSubtitleId !== VideoEngine.EXTERNAL_SUBTITLE_INDEX) {
+          return;
+        }
+        const text: string = info.text !== undefined ? info.text : '';
+        if (this.state.subtitleText !== text) {
+          this.state.subtitleText = text;
+          this.emit();
+        }
+      });
+      player.on('seekDone', () => {
+        this.finishSeek();
       });
       player.on('error', (err: Error) => {
         const detail: string = err === undefined || err === null ? 'unknown'
@@ -105,6 +156,13 @@ export class VideoEngine {
         player.fdSrc = descriptor;
       } else if (source.url.length > 0) {
         player.url = source.url;
+        // 本地回环流式代理：拉大缓冲区（20MB），高码率视频 seek/播放更不容易断流
+        try {
+          const strategy: media.PlaybackStrategy = { preferredBufferDuration: 20 };
+          await player.setPlaybackStrategy(strategy);
+        } catch (err) {
+          Logger.warn('VideoEngine', '设置播放缓冲策略失败');
+        }
       } else {
         player.url = source.path;
       }
@@ -214,6 +272,20 @@ export class VideoEngine {
     }
   }
 
+  private handleBuffering(infoType: media.BufferingInfoType, value: number): void {
+    if (infoType === media.BufferingInfoType.BUFFERING_START) {
+      this.state.buffering = true;
+      this.emit();
+    } else if (infoType === media.BufferingInfoType.BUFFERING_END) {
+      this.state.buffering = false;
+      if (this.seekPending) {
+        this.finishSeek();
+      }
+      this.emit();
+    }
+    Logger.info('VideoEngine', `缓冲事件 type=${infoType} value=${value}`);
+  }
+
   private handleState(next: media.AVPlayerState): void {
     const player: media.AVPlayer | null = this.player;
     if (player === null) {
@@ -248,7 +320,10 @@ export class VideoEngine {
         Logger.warn('VideoEngine', '播放器报告画面尺寸为 0：可能没有视频轨或编码不受支持');
       }
       this.emit();
-      this.loadTracks();
+      // 先读内嵌轨道，再挂外挂字幕（外挂字幕是合成轨道，不能被 loadTracks 重置掉）
+      this.loadTracks().then(() => this.mountExternalSubtitles(player)).catch((err: Error) => {
+        Logger.warn('VideoEngine', '初始化轨道信息失败');
+      });
       player.play().catch((err: Error) => {
         Logger.error('VideoEngine', 'play 失败', err);
       });
@@ -258,7 +333,18 @@ export class VideoEngine {
       this.state.playing = true;
       this.state.loading = false;
       this.startedPlayback = true;
+      // 切轨后重新出声即视为切换完成，收起加载动画
+      this.clearTrackSwitchTimer();
+      if (!this.seekPending) {
+        this.state.buffering = false;
+      }
       this.emit();
+      // prepared 阶段读轨道偶尔拿不到（部分容器首帧后才完整），这里补一次
+      if (!this.tracksLoaded) {
+        this.loadTracks().then(() => this.mountExternalSubtitles(player)).catch((err: Error) => {
+          Logger.warn('VideoEngine', '播放中补充读取轨道失败');
+        });
+      }
       return;
     }
     if (next === 'paused' || next === 'completed' || next === 'stopped') {
@@ -289,6 +375,12 @@ export class VideoEngine {
     }
   }
 
+  /**
+   * 跳转。
+   *  - 用 SEEK_CLOSEST 直接解到目标帧附近，避免高码率下为找 I 帧往回退一大段再解码；
+   *  - 立即点亮 buffering，让 UI 在"等待解码/缓冲"期间显示加载动画；
+   *  - seekDone 或缓冲结束熄灭；另有超时兜底，避免个别机型不回调时一直转圈。
+   */
   seekTo(positionMs: number): void {
     const player: media.AVPlayer | null = this.player;
     if (player === null) {
@@ -301,12 +393,48 @@ export class VideoEngine {
     if (this.state.durationMs > 0 && target > this.state.durationMs) {
       target = this.state.durationMs;
     }
+    if (Math.abs(target - this.state.positionMs) < 500) {
+      return;
+    }
+    this.state.positionMs = target;
+    this.state.buffering = true;
+    this.seekPending = true;
+    this.emit();
+    this.armSeekTimer();
     try {
-      player.seek(target);
-      this.state.positionMs = target;
-      this.emit();
+      player.seek(target, media.SeekMode.SEEK_CLOSEST);
     } catch (err) {
       Logger.warn('VideoEngine', 'seek 失败');
+      this.finishSeek();
+    }
+  }
+
+  /** seek 完成（或超时兜底）后熄灭"跳转中"状态 */
+  private finishSeek(): void {
+    if (!this.seekPending) {
+      return;
+    }
+    this.seekPending = false;
+    this.clearSeekTimer();
+    if (!this.state.loading) {
+      this.state.buffering = false;
+    }
+    this.emit();
+  }
+
+  /** seek 兜底：部分机型/容器不回调 seekDone，且不产生 buffering 事件 */
+  private armSeekTimer(): void {
+    this.clearSeekTimer();
+    this.seekTimer = setTimeout(() => {
+      this.seekTimer = -1;
+      this.finishSeek();
+    }, 15000);
+  }
+
+  private clearSeekTimer(): void {
+    if (this.seekTimer !== -1) {
+      clearTimeout(this.seekTimer);
+      this.seekTimer = -1;
     }
   }
 
@@ -393,9 +521,19 @@ export class VideoEngine {
         }
       }
       this.state.audioTracks = audio;
+      if (this.subtitlesMounted && this.externalSubtitles.length > 0) {
+        subtitle.push({
+          index: VideoEngine.EXTERNAL_SUBTITLE_INDEX,
+          label: this.externalSubtitles[0].label,
+          isSubtitle: true
+        });
+      }
       this.state.subtitleTracks = subtitle;
       this.state.selectedAudioId = audio.length > 0 ? audio[0].index : -1;
-      this.state.selectedSubtitleId = -1;
+      // 外挂字幕是合成轨道，重新读取内嵌轨道时保留它的选中态
+      if (this.state.selectedSubtitleId !== VideoEngine.EXTERNAL_SUBTITLE_INDEX) {
+        this.state.selectedSubtitleId = -1;
+      }
       try {
         const selected: number[] = await player.getSelectedTracks();
         for (const selectedIndex of selected) {
@@ -436,13 +574,21 @@ export class VideoEngine {
       }
     }
     if (index < 0) {
-      this.state.selectedSubtitleId = -1;
+      this.state.selectedSubtitleId = index;
+      this.state.subtitleText = '';
+      this.emit();
+      return;
+    }
+    // 外挂字幕：系统已经通过 addSubtitleFromFd 挂载，只需切换开关状态
+    if (index === VideoEngine.EXTERNAL_SUBTITLE_INDEX) {
+      this.state.selectedSubtitleId = index;
       this.emit();
       return;
     }
     try {
       await player.selectTrack(index);
       this.state.selectedSubtitleId = index;
+      this.state.subtitleText = '';
       this.emit();
       Logger.info('VideoEngine', `已切换字幕轨: ${index}`);
     } catch (err) {
@@ -452,8 +598,8 @@ export class VideoEngine {
 
   /** 选择轨道：index < 0 表示关闭字幕；音轨/字幕均通过 AVPlayer.selectTrack 真正切换 */
   async selectTrack(index: number): Promise<void> {
-    if (index < 0) {
-      await this.selectSubtitle(-1);
+    if (index < 0 || index === VideoEngine.EXTERNAL_SUBTITLE_INDEX) {
+      await this.selectSubtitle(index);
       return;
     }
     let isAudio: boolean = false;
@@ -476,13 +622,46 @@ export class VideoEngine {
     if (player === null || !isAudio) {
       return;
     }
+    // 高码率片源切音轨时，播放器要重建解码链并重新解码当前段，画面会明显落后于声音。
+    // 这里保持 buffering 直到播放器重新同步，UI 上能看到"处理中"而不是假死。
+    this.state.buffering = true;
+    this.emit();
     try {
       await player.selectTrack(index);
       this.state.selectedAudioId = index;
       this.emit();
       Logger.info('VideoEngine', `已切换音轨: ${index}`);
+      // 重建解码链后视频与音频时间轴可能错位：以当前时间为基准重新对齐，
+      // 避免"音频走了画面还在旧位置"的长时间不同步。
+      const current: number = player.currentTime;
+      if (current > 0) {
+        player.seek(current, media.SeekMode.SEEK_CLOSEST);
+      }
+      this.armTrackSwitchTimer();
     } catch (err) {
+      this.clearTrackSwitchTimer();
+      this.state.buffering = false;
+      this.emit();
       Logger.warn('VideoEngine', `切换音轨失败: ${index}`);
+    }
+  }
+
+  /** 切轨后的兜底：播放器不回调 playing 时也要熄灭加载动画 */
+  private armTrackSwitchTimer(): void {
+    this.clearTrackSwitchTimer();
+    this.trackSwitchTimer = setTimeout(() => {
+      this.trackSwitchTimer = -1;
+      if (this.state.buffering) {
+        this.state.buffering = false;
+        this.emit();
+      }
+    }, 15000);
+  }
+
+  private clearTrackSwitchTimer(): void {
+    if (this.trackSwitchTimer !== -1) {
+      clearTimeout(this.trackSwitchTimer);
+      this.trackSwitchTimer = -1;
     }
   }
 
@@ -515,6 +694,53 @@ export class VideoEngine {
     if (changed) {
       this.emit();
     }
+    // 切轨成功：收起"处理中"动画（音轨已就绪，画面会继续从当前时间播放）
+    if (isSelected) {
+      for (const track of this.state.audioTracks) {
+        if (track.index === index) {
+          this.clearTrackSwitchTimer();
+          this.state.buffering = false;
+          this.emit();
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * 挂载外挂字幕（同目录同名 srt/ass/vtt）。
+   * AVPlayer 只允许在 prepared 之后挂载，且同一时间只支持一条外挂字幕；
+   * 挂载成功后往「字幕」菜单里加一条合成轨道并默认选中，文本由 subtitleUpdate 推送。
+   */
+  private async mountExternalSubtitles(player: media.AVPlayer): Promise<void> {
+    if (this.subtitlesMounted || this.externalSubtitles.length === 0) {
+      return;
+    }
+    const subtitle: ExternalSubtitle = this.externalSubtitles[0];
+    if (subtitle.fd < 0) {
+      return;
+    }
+    try {
+      await player.addSubtitleFromFd(subtitle.fd, 0, subtitle.size);
+      Logger.info('VideoEngine', `已挂载外挂字幕 ${subtitle.name} fd=${subtitle.fd} size=${subtitle.size}`);
+    } catch (err) {
+      Logger.warn('VideoEngine', `挂载外挂字幕失败 ${subtitle.name}`);
+      return;
+    }
+    if (this.player !== player) {
+      return;
+    }
+    this.subtitlesMounted = true;
+    const option: TrackOption = {
+      index: VideoEngine.EXTERNAL_SUBTITLE_INDEX,
+      label: subtitle.label,
+      isSubtitle: true
+    };
+    const subtitles: TrackOption[] = this.state.subtitleTracks.slice();
+    subtitles.push(option);
+    this.state.subtitleTracks = subtitles;
+    this.state.selectedSubtitleId = VideoEngine.EXTERNAL_SUBTITLE_INDEX;
+    this.emit();
   }
 
   positionMs(): number {
@@ -527,9 +753,23 @@ export class VideoEngine {
 
   async release(): Promise<void> {
     this.clearSurfaceTimer();
+    this.clearTrackSwitchTimer();
+    this.clearSeekTimer();
     this.surfaceAttached = false;
     this.tracksLoaded = false;
     this.startedPlayback = false;
+    for (const subtitle of this.externalSubtitles) {
+      if (subtitle.fd >= 0) {
+        try {
+          fs.closeSync(subtitle.fd);
+        } catch (err) {
+          Logger.warn('VideoEngine', `关闭外挂字幕文件失败 ${subtitle.name}`);
+        }
+      }
+    }
+    this.externalSubtitles = [];
+    this.seekPending = false;
+    this.subtitlesMounted = false;
     const player: media.AVPlayer | null = this.player;
     this.player = null;
     if (player === null) {

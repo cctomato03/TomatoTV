@@ -41,14 +41,15 @@ export struct ImageSlide {
 
   private load(): void {
     const cache: ImageMemoryCache = ImageMemoryCache.get();
-    const hit: image.PixelMap | null = cache.peek(this.path);
+    const key: string = ImageMemoryCache.keyOf(this.source.id, this.path);
+    const hit: image.PixelMap | null = cache.peek(key);
     if (hit !== null) {
       this.pixel = hit;
       this.onLoaded(this.path);
       return;
     }
     this.failed = false;
-    cache.ensure(this.path, () => this.decode()).then((pixelMap: image.PixelMap | null) => {
+    cache.ensure(key, () => this.decode()).then((pixelMap: image.PixelMap | null) => {
       if (pixelMap === null) {
         this.failed = true;
         this.onFailed(this.path);
@@ -102,7 +103,7 @@ export struct ImageSlide {
             .fontColor([$r('app.color.text_tertiary')])
           Text('这个图片无法读取或无法解码')
             .fontSize(13)
-            .fontColor(Color.White)
+            .fontColor($r('app.color.text_secondary'))
             .textAlign(TextAlign.Center)
           Button('重试')
             .type(ButtonType.Capsule)
@@ -118,7 +119,7 @@ export struct ImageSlide {
         LoadingProgress()
           .width(44)
           .height(44)
-          .color(Color.White)
+          .color($r('app.color.brand'))
       }
     }
     .width('100%')

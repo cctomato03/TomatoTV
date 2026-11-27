@@ -78,6 +78,11 @@ export class SafeLink {
       if (lower.startsWith('www.')) {
         return `https://${token}`;
       }
+      // 作者字段里常见不带协议的域名/路径（example.com/xxx）
+      if (lower.indexOf('.') > 0 && lower.indexOf('@') < 0 && !lower.startsWith('.') &&
+        lower.indexOf('/') !== 0) {
+        return `https://${token}`;
+      }
     }
     return '';
   }

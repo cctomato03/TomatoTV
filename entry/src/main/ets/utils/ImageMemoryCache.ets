@@ -26,6 +26,11 @@ export class ImageMemoryCache {
     return ImageMemoryCache.instance;
   }
 
+  /** 缓存键必须带上来源 id：不同来源可能有相同相对路径 */
+  static keyOf(sourceId: string, path: string): string {
+    return `${sourceId}|${path}`;
+  }
+
   setLimit(limit: number): void {
     this.limit = limit < 1 ? 1 : limit;
     this.trim();

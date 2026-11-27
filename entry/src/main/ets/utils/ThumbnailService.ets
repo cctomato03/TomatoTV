@@ -1,7 +1,7 @@
 import { image } from '@kit.ImageKit';
 import { AppContainer } from '../app/AppContainer';
 import { FileEntry } from '../model/FileEntry';
-import { FileSource, SourceType } from '../model/FileSource';
+import { FileSource } from '../model/FileSource';
 import { PreviewKind } from '../model/FileKinds';
 import { ImageLoader } from './ImageLoader';
 import { Logger } from './Logger';
@@ -95,23 +95,14 @@ export class ThumbnailService {
       if (repository === null) {
         return;
       }
-      let localPath: string = request.entry.path;
-      if (request.source.type !== SourceType.LOCAL) {
-        localPath = await repository.materializeToPath(request.source, request.entry);
-      }
-      let loaded = await ImageLoader.fromPath(localPath, THUMB_EDGE);
-      if (loaded.pixelMap === null) {
-        const bytes: ArrayBuffer = await repository.readDocument(request.source, request.entry, MAX_SOURCE_BYTES);
-        if (bytes.byteLength === 0) {
-          return;
-        }
-        loaded = await ImageLoader.fromBytes(bytes, THUMB_EDGE);
-      }
-      if (loaded.pixelMap === null) {
+      // 统一走 ImageLoader：远程图片只读本地缓存（路径/fd/本地字节），不再回源下载
+      const pixelMap: image.PixelMap | null = await ImageLoader.loadEntry(repository, request.source,
+        request.entry, THUMB_EDGE, MAX_SOURCE_BYTES);
+      if (pixelMap === null) {
         return;
       }
-      this.put(request.key, loaded.pixelMap);
-      request.callback(loaded.pixelMap);
+      this.put(request.key, pixelMap);
+      request.callback(pixelMap);
     } catch (err) {
       Logger.warn('ThumbnailService', `缩略图加载失败 ${request.entry.name}`);
     } finally {

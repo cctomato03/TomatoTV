@@ -1,4 +1,4 @@
-import { fileIo as fs, ReadOptions } from '@kit.CoreFileKit';
+import { fileIo as fs, fileUri, ReadOptions } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { FileEntry, FileEntryFactory } from '../../model/FileEntry';
 import { FsError, FsErrorKind, FileSystemClient, InputStreamLike, PlayableMedia } from './FileSystemClient';
@@ -51,13 +51,30 @@ export class LocalFileSystem implements FileSystemClient {
   private rootPath: string;
 
   constructor(rootPath: string) {
-    this.rootPath = rootPath.endsWith('/') && rootPath.length > 1
-      ? rootPath.substring(0, rootPath.length - 1)
-      : rootPath;
+    const normalized: string = LocalFileSystem.toSandboxPath(rootPath);
+    this.rootPath = normalized.endsWith('/') && normalized.length > 1
+      ? normalized.substring(0, normalized.length - 1)
+      : normalized;
+  }
+
+  /**
+   * Picker 返回的是 file://docs/... 这类 URI，而 fileIo 的 listFile / stat 只接受沙箱路径。
+   * 用 FileUri.path 转成沙箱路径后再调用文件接口（官方推荐的 URI -> 路径转换方式）。
+   */
+  private static toSandboxPath(path: string): string {
+    if (!path.startsWith('file://')) {
+      return path;
+    }
+    try {
+      return new fileUri.FileUri(path).path;
+    } catch (err) {
+      Logger.warn('LocalFileSystem', `URI 转路径失败: ${path}`);
+      return path;
+    }
   }
 
   private resolve(path: string): string {
-    const target: string = path.length === 0 ? this.rootPath : path;
+    const target: string = path.length === 0 ? this.rootPath : LocalFileSystem.toSandboxPath(path);
     return target;
   }
 

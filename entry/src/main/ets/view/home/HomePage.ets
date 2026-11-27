@@ -8,6 +8,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { SourceCard } from '../../components/SourceCard';
 import { Symbols } from '../../components/Symbols';
 import { Logger } from '../../utils/Logger';
+import { WindowTheme } from '../../utils/WindowTheme';
 
 /** 首页（规范 §7.2）：标题 + 来源卡片 + 固定“添加存储”主按钮 */
 @Component
@@ -22,6 +23,7 @@ export struct HomePage {
   };
 
   aboutToAppear(): void {
+    WindowTheme.light();
     this.reload();
     EventBus.on(BusKeys.SOURCES_CHANGED, this.onSourcesChanged);
   }

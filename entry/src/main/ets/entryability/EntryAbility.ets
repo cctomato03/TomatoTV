@@ -2,6 +2,7 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppContainer } from '../app/AppContainer';
+import { WindowTheme } from '../utils/WindowTheme';
 import { Logger } from '../utils/Logger';
 
 const DOMAIN: number = 0x0001;
@@ -21,6 +22,7 @@ export default class EntryAbility extends UIAbility {
         return;
       }
       AppContainer.get().attachWindowStage(windowStage);
+      WindowTheme.light();
     });
   }
 

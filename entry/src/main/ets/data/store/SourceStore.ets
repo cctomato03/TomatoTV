@@ -45,7 +45,7 @@ export class SourceStore implements SecretResolver {
     try {
       this.prefs = preferences.getPreferencesSync(context, { name: STORE_NAME });
       this.reload();
-      this.ensureBuiltin();
+      this.dropBuiltin();
       this.activateLocalPermissions();
     } catch (err) {
       Logger.error('SourceStore', '初始化来源存储失败', err as Error);
@@ -115,24 +115,22 @@ export class SourceStore implements SecretResolver {
     return base;
   }
 
-  /** 应用私有目录始终可作为本机来源，供智慧屏/PC 无文件选择器时使用（规范 §8.2） */
-  private ensureBuiltin(): void {
-    if (this.sandboxDir.length === 0) {
-      return;
-    }
+  /** 不再默认内置应用目录：旧版本写入的内置来源在启动时移除 */
+  private dropBuiltin(): void {
+    const next: FileSource[] = [];
+    let removed: boolean = false;
     for (const item of this.items) {
-      if (item.id === BUILTIN_LOCAL_ID) {
-        item.localUri = this.sandboxDir;
-        return;
+      if (item.builtIn || item.id === BUILTIN_LOCAL_ID) {
+        removed = true;
+        continue;
       }
+      next.push(item);
     }
-    const builtin: FileSource = SourceFactory.blank(SourceType.LOCAL);
-    builtin.id = BUILTIN_LOCAL_ID;
-    builtin.name = '应用目录';
-    builtin.localUri = this.sandboxDir;
-    builtin.builtIn = true;
-    this.items.unshift(builtin);
-    this.persist();
+    if (removed) {
+      this.items = next;
+      this.persist();
+      Logger.info('SourceStore', '已移除内置应用目录来源');
+    }
   }
 
   list(): FileSource[] {

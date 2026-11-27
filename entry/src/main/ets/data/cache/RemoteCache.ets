@@ -261,11 +261,29 @@ export class RemoteCache {
     }
   }
 
+  private downloads: Map<string, Promise<string>> = new Map<string, Promise<string>>();
+
   /**
    * 把远程文件完整下载到缓存，返回本地数据文件路径。
-   * 使用 readRange 分块读取，避免整文件驻留内存（规范 §12）。
+   * 同一个 sourceId/path 的并发请求会复用同一个下载任务，避免图片解码和元数据读取重复下载。
    */
   async download(client: FileSystemClient, sourceId: string, path: string, size: number,
+    onProgress?: (received: number, total: number) => void): Promise<string> {
+    const key: string = `${sourceId}|${path}`;
+    const pending: Promise<string> | undefined = this.downloads.get(key);
+    if (pending !== undefined) {
+      return pending;
+    }
+    const task: Promise<string> = this.downloadOnce(client, sourceId, path, size, onProgress);
+    this.downloads.set(key, task);
+    try {
+      return await task;
+    } finally {
+      this.downloads.delete(key);
+    }
+  }
+
+  private async downloadOnce(client: FileSystemClient, sourceId: string, path: string, size: number,
     onProgress?: (received: number, total: number) => void): Promise<string> {
     const cached: string = await this.find(sourceId, path);
     if (cached.length > 0) {

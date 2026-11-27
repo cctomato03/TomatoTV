@@ -132,6 +132,21 @@ export class FileKinds {
         if (ext === 'ogg' || ext === 'oga') {
           return 'audio/ogg';
         }
+        if (ext === 'm4a' || ext === 'm4b' || ext === 'alac') {
+          return 'audio/mp4';
+        }
+        if (ext === 'aac') {
+          return 'audio/aac';
+        }
+        if (ext === 'amr') {
+          return 'audio/amr';
+        }
+        if (ext === 'wma') {
+          return 'audio/x-ms-wma';
+        }
+        if (ext === 'ape') {
+          return 'audio/x-ape';
+        }
         return 'audio/mpeg';
       case PreviewKind.PDF:
         return 'application/pdf';

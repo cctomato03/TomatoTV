@@ -5,6 +5,9 @@ import { Fmt } from '../../utils/Format';
 import { BusKeys, EventBus } from '../../utils/EventBus';
 import { Symbols } from '../../components/Symbols';
 import { EmptyState } from '../../components/EmptyState';
+import { ImageMemoryCache } from '../../utils/ImageMemoryCache';
+import { ThumbnailService } from '../../utils/ThumbnailService';
+import { WindowTheme } from '../../utils/WindowTheme';
 
 /** 缓存管理（规范 §7.12）：文件数、总大小、清理全部 */
 @Component
@@ -15,6 +18,7 @@ export struct CachePage {
   private container: AppContainer = AppContainer.get();
 
   aboutToAppear(): void {
+    WindowTheme.light();
     this.refresh();
   }
 
@@ -47,6 +51,8 @@ export struct CachePage {
           if (cache !== null) {
             cache.clearAll();
           }
+          ImageMemoryCache.get().clearAll();
+          ThumbnailService.get().clear();
           this.refresh();
           this.busy = false;
           EventBus.emit(BusKeys.CACHE_CHANGED);

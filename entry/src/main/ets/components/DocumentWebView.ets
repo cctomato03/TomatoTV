@@ -21,6 +21,8 @@ export struct DocumentWebView {
   docMime: string = 'application/octet-stream';
   onFail: () => void = () => {
   };
+  onPageEnd: () => void = () => {
+  };
 
   private controller: webview.WebviewController = new webview.WebviewController();
 
@@ -76,6 +78,9 @@ export struct DocumentWebView {
       .horizontalScrollBarAccess(true)
       .width('100%')
       .height('100%')
+      .onPageEnd(() => {
+        this.onPageEnd();
+      })
       .onInterceptRequest((event) => {
         if (event === undefined) {
           return DocumentWebView.blockedResponse(404);

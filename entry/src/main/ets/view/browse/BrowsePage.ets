@@ -3,7 +3,6 @@ import { AppContainer } from '../../app/AppContainer';
 import { FileEntry, FileEntryFactory, FileSorter, SortMode } from '../../model/FileEntry';
 import { PreviewKind } from '../../model/FileKinds';
 import { FileSource, SourceFactory, SourceType } from '../../model/FileSource';
-import { ThumbnailService } from '../../utils/ThumbnailService';
 import { SettingsValidation, ViewMode } from '../../model/AppSettings';
 import { FsError, FsErrorKind, FsErrorText } from '../../data/fs/FileSystemClient';
 import { Breakpoint, Layout } from '../../utils/Breakpoint';
@@ -13,6 +12,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { FileRow, FileTile } from '../../components/FileRow';
 import { Symbols } from '../../components/Symbols';
 import { Logger } from '../../utils/Logger';
+import { WindowTheme } from '../../utils/WindowTheme';
 
 interface TrailItem {
   name: string;
@@ -57,6 +57,7 @@ export struct BrowsePage {
   };
 
   aboutToAppear(): void {
+    WindowTheme.light();
     this.applySettings();
     const source: FileSource | null = this.container.findSource(this.param.sourceId);
     if (source !== null) {
@@ -72,7 +73,6 @@ export struct BrowsePage {
   aboutToDisappear(): void {
     EventBus.off(BusKeys.SETTINGS_CHANGED, this.onSettingsChanged);
     this.snapshots = [];
-    ThumbnailService.get().clear();
   }
 
   private static rootPathOf(source: FileSource): string {
@@ -361,30 +361,6 @@ export struct BrowsePage {
       }
       .width('100%')
 
-      Scroll() {
-        Row({ space: 4 }) {
-          ForEach(this.trail, (item: TrailItem, index: number) => {
-            Row({ space: 2 }) {
-              Text(item.name)
-                .fontSize(13)
-                .fontColor(index === this.trail.length - 1 ? $r('app.color.brand') :
-                  $r('app.color.text_secondary'))
-                .maxLines(1)
-                .padding({ left: 4, right: 4, top: 2, bottom: 2 })
-                .onClick(() => this.jumpTo(item, index))
-              if (index < this.trail.length - 1) {
-                SymbolGlyph(Symbols.forward())
-                  .fontSize(10)
-                  .fontColor([$r('app.color.text_tertiary')])
-              }
-            }
-          }, (item: TrailItem, index: number) => `${item.path}_${index}`)
-        }
-      }
-      .scrollable(ScrollDirection.Horizontal)
-      .scrollBar(BarState.Off)
-      .width('100%')
-
       Row({ space: 8 }) {
         Text(`${this.entries.length} 项`)
           .fontSize(12)
@@ -523,7 +499,7 @@ export struct BrowsePage {
             })
           }
           .onClick(() => this.openEntry(item))
-        }, (item: FileEntry) => item.path)
+        }, (item: FileEntry) => `${item.path}_${item.size}_${item.lastModified}`)
       }
       .width('100%')
       .height('100%')
@@ -552,7 +528,7 @@ export struct BrowsePage {
           })
         }
         .onClick(() => this.openEntry(item))
-      }, (item: FileEntry) => item.path)
+      }, (item: FileEntry) => `${item.path}_${item.size}_${item.lastModified}`)
     }
     .columnsTemplate(this.gridTemplate())
     .columnsGap(12)

@@ -175,6 +175,19 @@ v1.8.2 播放页布局与轨道选择：
 - 真机验证：Cold War MKV 4 条音轨（TrueHD/AC3/DTS/AC3）切换成功；Netflix MKV 2 条内嵌
   SRT 字幕切换/关闭成功。
 
+v1.9.0 音频在线播放修复（真机反馈"每次点音频都要等很久，像是先整文件下载"）：
+- 根因一：`AudioPlayerPage.playIndex()` 构造播放句柄时 `size` 传了 `0`，
+  流式代理用 0 去响应 `Range`，播放器收到 **HTTP 416** 后立即报错，页面再回退到整文件缓存。
+  `FileRepository.playable()` 现在在 `size<=0` 时补一次 `stat()`，音频页的 `PlaylistItem`
+  也带上真实大小。
+- 根因二：页面用 `lyricsError` 判断"流式失败"；歌词查不到时会写入"暂无歌词"，
+  被误判成播放失败而触发整文件回退。`AudioState` 新增独立的 `playbackError`，
+  只有播放器本身报错才回退；歌词缺失不再影响播放链路。
+- 回退只作用于"当前这一首重试"，后续切歌重新尝试流式播放；已开始播放后的错误只记日志。
+- 真机验证（本机 WebDAV 测试服务）：m4a / FLAC 均走 `stream` 地址直接起播，
+  日志无 416、无"流式播放失败"，歌曲自动下一首正常；当前目录的所有音频构成播放列表，
+  点击哪首就从哪首开始。
+
 ## 7. M2TS / TS 时长：已接入播放器，缺真实样本回归
 
 - `media/MpegTsDuration.ets` 按文档 §9.3 实现：
@@ -226,7 +239,7 @@ v1.8.2 播放页布局与轨道选择：
 - 已实现：
   - 首页"添加存储"主按钮在无来源时 `defaultFocus(true)`；浏览页列表/网格首项默认聚焦；
   - 视频播放页 `onKeyEvent`：空格/回车/确认键播放暂停，左右方向键快退/快进 10 秒；
-  - 音频播放页 `onKeyEvent`：空格/回车播放暂停，左右 10 秒 seek，上下切换上/下一首。
+  - 音频播放页 `onKeyEvent`：空格/回车播放暂停，左右（以及上下）方向键切换上一首/下一首。
 - 未实现：逐页自定义 D-Pad 焦点映射（`FocusControl.requestFocus`），当前依赖系统默认焦点顺序，
   需在智慧屏真机上逐页走查。
 
@@ -336,6 +349,23 @@ v1.6.0 追加（真机反馈"进查看器一直转圈，滑一下才出图"）�
   直接当路径都可能让 `createImageSource(path)` 失败，一旦失败就连作者字段都读不到）；
   读取字段扩展为 作者 → 版权 → 图片描述，并把结果打到日志便于核对。
 
+v1.9.0（第九轮真机反馈）：
+- **缓存**：退出查看器不再 `ImageMemoryCache.clearAll()`，缩略图也不再随浏览页销毁而清空；
+  像素缓存按 `来源id|路径` 做 LRU（6 张），再次打开同一张图/相邻图直接命中，不发请求。
+  实测重开同一张远程图片：WebDAV 服务端没有收到任何 GET（缓存和元数据都命中本地缓存）。
+- **元数据**：改为先 `materializeToPath()` 取本地缓存文件，再用 `fs.open` + `image.createImageSource(fd)`
+  读取尺寸和 EXIF；每个字段单独 catch（`ARTIST` / `COPYRIGHT` / `IMAGE_DESCRIPTION` / `USER_COMMENT`），
+  某一个字段缺失不会导致整组信息失败。作者字段中的 URL 会显示在信息面板并可打开。
+- **图片缓存不再回源**：路径/fd 解码失败时，远程图片只读本地缓存文件字节，不再调用
+  `repository.readDocument()` 走网络；`RemoteCache.download()` 对同一 source/path 做并发去重，
+  图片解码与元数据读取不会重复下载。
+- **链接按钮居中**：之前 `.align(Alignment.BottomEnd)` 作用在 Button 的**内容**上，
+  图标被推到红圈右下角；改为外层 `Stack(BottomEnd) + hitTestBehavior(None)` 定位按钮，
+  按钮内容自然居中。真机像素校验：红圈中心 (1122.51, 2500.48)，图标质心 (1122.51, 2500.84)，
+  偏差 0.36px。
+- **列表刷新**：浏览页 `ForEach` 的 key 加入 `size/lastModified`，刷新后文件大小/时间变化
+  能正常更新（之前 key 只含 path，ArkUI 复用旧节点导致显示旧值）。
+
 ## 15. 本机目录权限（v1.8.0 补充）
 
 HarmonyOS NEXT **不提供"读取全部存储"权限**，官方路径是 `DocumentViewPicker` 选择目录 +
@@ -346,4 +376,10 @@ HarmonyOS NEXT **不提供"读取全部存储"权限**，官方路径是 `Docume
   （`file://` 开头的 URI）逐个激活，失败只记日志。
 - 权限不足时，浏览页的错误页新增「重新选择目录」按钮（直接跳到该来源的编辑页），
   并提示"HarmonyOS 不允许应用直接读取全部存储…"；来源编辑页的本机目录区域也补充了同样的说明。
-- 智慧屏 / PC 没有文件选择器时，可以直接使用内置的「应用目录」（应用沙箱），无需任何授权。
+- v1.9.0 修复"本地存储读不出文件列表"：Picker 返回的是 `file://docs/...` URI，
+  而 `fileIo.listFile/stat` 只接受沙箱路径，直接传 URI 会失败。`LocalFileSystem` 现在用
+  `fileUri.FileUri(uri).path` 统一转成沙箱路径后再调用文件接口（官方推荐的转换方式）。
+  真机验证：选择公共 Download 目录后能列出 20 项。
+- v1.9.0 按产品要求**移除默认内置的「应用目录」**：启动时不再创建 `builtin_local`，
+  旧版本已写入的内置来源会在 `SourceStore.init()` 中自动删除；本机来源全部由用户
+  通过系统目录选择器自行创建。
