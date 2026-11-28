@@ -4,8 +4,10 @@ import { FileSource } from '../../model/FileSource';
 import { FileEntry } from '../../model/FileEntry';
 import { FileKinds } from '../../model/FileKinds';
 import { PlayableMedia } from '../../data/fs/FileSystemClient';
-import { MediaDefaults, PlaybackSpeeds, TrackOption, VideoState } from '../../media/MediaTypes';
-import { VideoEngine, ExternalSubtitle } from '../../media/VideoEngine';
+import { MediaDefaults, PlaybackSpeeds, TrackOption, VideoState, ExternalSubtitle } from '../../media/MediaTypes';
+import { IjkVideoEngine } from '../../media/IjkVideoEngine';
+import { FfmpegProbe, FfmpegProbeResult } from '../../media/FfmpegProbe';
+import { SubtitleCue, SubtitleParser } from '../../media/SubtitleParser';
 import { MpegTsDuration } from '../../media/MpegTsDuration';
 import { ClientByteReader } from '../../media/ClientByteReader';
 import { Fmt } from '../../utils/Format';
@@ -13,6 +15,7 @@ import { Symbols } from '../../components/Symbols';
 import { KeyCode } from '@kit.InputKit';
 import { deviceInfo, BusinessError } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { util } from '@kit.ArkTS';
 import { window } from '@kit.ArkUI';
 import { Logger } from '../../utils/Logger';
 import { WindowTheme } from '../../utils/WindowTheme';
@@ -38,8 +41,18 @@ export struct VideoPlayerPage {
   @State speedLabel: string = '1x';
   @State pcrDurationMs: number = 0;
 
-  private engine: VideoEngine = new VideoEngine();
+  /** ijk 引擎 id 必须与 XComponent id 一致 */
+  private ijkEngine: IjkVideoEngine = new IjkVideoEngine('tomato_video_ijk');
+  private ijkContext: object | undefined = undefined;
+  private playable: PlayableMedia | null = null;
+  private ijkStarted: boolean = false;
+  private probeAudioTracks: TrackOption[] = [];
+  private probeSubtitleTracks: TrackOption[] = [];
+  private probeSelectedAudioId: number = -1;
+  private probeHdrType: number = 0;
   private controller: XComponentController = new XComponentController();
+  private externalLabel: string = '';
+  private externalCues: SubtitleCue[] = [];
   private container: AppContainer = AppContainer.get();
   private hideTimer: number = -1;
   private opened: boolean = false;
@@ -71,21 +84,51 @@ export struct VideoPlayerPage {
   }
 
   aboutToAppear(): void {
-    this.engine.onChange((state: VideoState) => {
-      this.videoState = state;
-      this.speedLabel = PlaybackSpeeds.label(state.speed);
-      if (state.error !== null) {
-        Logger.warn('VideoPlayerPage', `播放失败: ${state.error}`);
-      }
+    this.ijkEngine.onChange((state: VideoState) => {
+      this.applyState(state);
     });
     WindowTheme.immersive('#000000');
     this.enterLandscape();
   }
 
+  private showHdrNotice(): void {
+    Logger.info('VideoPlayerPage', 'HDR 片源');
+  }
+
+  private applyState(state: VideoState): void {
+    this.videoState = state;
+    this.speedLabel = PlaybackSpeeds.label(state.speed);
+    if (state.error !== null) {
+      Logger.warn('VideoPlayerPage', `播放失败: ${state.error}`);
+    }
+  }
+
+  /** XComponent 就绪：首次打开或重建后按当前进度重开 ijk */
+  private onSurfaceReady(context?: object): void {
+    if (context !== undefined && context !== null) {
+      this.ijkContext = context;
+    }
+    if (this.playable === null) {
+      this.open();
+      return;
+    }
+    this.startIjkPlayback(this.videoState.positionMs);
+  }
+
+  private startIjkPlayback(startMs: number): void {
+    if (this.playable === null || this.ijkContext === undefined) {
+      return;
+    }
+    this.ijkStarted = true;
+    this.ijkEngine.open(this.playable, this.param.name, this.ijkContext, startMs,
+      this.probeAudioTracks, this.probeSelectedAudioId, this.probeSubtitleTracks,
+      this.externalLabel, this.externalCues, this.controller.getXComponentSurfaceId(),
+      this.probeHdrType);
+  }
 
   aboutToDisappear(): void {
     this.clearHideTimer();
-    this.engine.release();
+    this.ijkEngine.release();
     this.exitLandscape();
     WindowTheme.exitImmersive();
   }
@@ -170,20 +213,77 @@ export struct VideoPlayerPage {
         kind: this.param.kind
       };
       const playable: PlayableMedia = await this.container.repository!.playable(source, entry);
+      this.playable = playable;
       this.usedStream = playable.url.length > 0;
       Logger.info('VideoPlayerPage', `播放来源: ${this.usedStream ? 'stream ' + playable.url : 'fd ' + playable.fd}`);
-      const subtitles: ExternalSubtitle[] = await this.findExternalSubtitles(source);
-      await this.engine.open(playable, this.param.name, () => this.controller.getXComponentSurfaceId(), subtitles);
+      const probe: FfmpegProbeResult | null = await FfmpegProbe.probe(playable);
+      if (probe !== null) {
+        this.probeAudioTracks = probe.audioTracks;
+        this.probeSubtitleTracks = probe.subtitleTracks;
+        this.probeSelectedAudioId = probe.selectedAudioId;
+        this.probeHdrType = probe.hdrType;
+      }
+      await this.loadExternalSubtitle(source);
+      if (this.ijkContext !== undefined) {
+        this.startIjkPlayback(0);
+      }
       this.scheduleHide();
-      if (this.engine.durationMs() <= 0) {
+      if (this.videoState.durationMs <= 0) {
         setTimeout(() => {
-          if (this.engine.durationMs() <= 0) {
+          if (this.videoState.durationMs <= 0) {
             this.probePcrDuration(source);
           }
-        }, 1200);
+        }, 1500);
       }
     } catch (err) {
       Logger.error('VideoPlayerPage', '打开视频失败', err as Error);
+    }
+  }
+
+  /** 读取并解析同目录同名的外挂字幕（ijk 不支持挂载，改由应用自己渲染） */
+  private async loadExternalSubtitle(source: FileSource): Promise<void> {
+    const subtitles: ExternalSubtitle[] = await this.findExternalSubtitles(source);
+    if (subtitles.length === 0) {
+      return;
+    }
+    const subtitle: ExternalSubtitle = subtitles[0];
+    try {
+      const size: number = subtitle.size > 4 * 1024 * 1024 ? 4 * 1024 * 1024 : subtitle.size;
+      const buffer: ArrayBuffer = new ArrayBuffer(size);
+      const readLength: number = fs.readSync(subtitle.fd, buffer);
+      const actual: ArrayBuffer = readLength > 0 && readLength < size ? buffer.slice(0, readLength) : buffer;
+      const content: string = VideoPlayerPage.decodeSubtitle(actual);
+      const extension: string = subtitle.name.lastIndexOf('.') >= 0
+        ? subtitle.name.substring(subtitle.name.lastIndexOf('.') + 1).toLowerCase() : '';
+      this.externalCues = SubtitleParser.parse(content, extension);
+      this.externalLabel = subtitle.label;
+      Logger.info('VideoPlayerPage', `外挂字幕解析 ${this.externalCues.length} 条 ${subtitle.name}`);
+    } catch (err) {
+      Logger.warn('VideoPlayerPage', `解析外挂字幕失败 ${subtitle.name}`);
+    } finally {
+      try {
+        fs.closeSync(subtitle.fd);
+      } catch (err) {
+        Logger.warn('VideoPlayerPage', '关闭外挂字幕文件失败');
+      }
+    }
+  }
+
+  /** 按 BOM 选择编码，兼容 UTF-16 字幕 */
+  private static decodeSubtitle(buffer: ArrayBuffer): string {
+    const bytes: Uint8Array = new Uint8Array(buffer);
+    let encoding: string = 'utf-8';
+    if (bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE) {
+      encoding = 'utf-16le';
+    } else if (bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF) {
+      encoding = 'utf-16be';
+    }
+    try {
+      const decoder: util.TextDecoder = util.TextDecoder.create(encoding);
+      return decoder.decodeToString(bytes);
+    } catch (err) {
+      const fallback: util.TextDecoder = util.TextDecoder.create('utf-8');
+      return fallback.decodeToString(bytes);
     }
   }
 
@@ -260,10 +360,37 @@ export struct VideoPlayerPage {
     return slash > 0 ? trimmed.substring(0, slash) : '/';
   }
 
+  /** ijk 画面宽高比；未知时按 16:9 */
+  private ijkAspectRatio(): number {
+    const width: number = this.videoState.videoWidth;
+    const height: number = this.videoState.videoHeight;
+    if (width > 0 && height > 0) {
+      return width / height;
+    }
+    return 16 / 9;
+  }
+
   private seekBy(deltaMs: number): void {
-    this.engine.seekTo(this.videoState.positionMs + deltaMs);
+    this.controllerSeekTo(this.videoState.positionMs + deltaMs);
     this.showSeekHint(deltaMs > 0 ? '快进 10 秒' : '快退 10 秒');
     this.scheduleHide();
+  }
+
+  /** 统一控制：全部走 ijkplayer 单流 */
+  private controllerToggle(): void {
+    this.ijkEngine.toggle();
+  }
+
+  private controllerSeekTo(positionMs: number): void {
+    this.ijkEngine.seekTo(positionMs);
+  }
+
+  private controllerSetSpeed(speed: number): void {
+    this.ijkEngine.setSpeed(speed);
+  }
+
+  private controllerSelectTrack(index: number): void {
+    this.ijkEngine.selectTrack(index);
   }
 
   private showSeekHint(text: string): void {
@@ -276,17 +403,30 @@ export struct VideoPlayerPage {
   build() {
     NavDestination() {
       Stack({ alignContent: Alignment.Bottom }) {
-        XComponent({ id: 'tomato_video', type: XComponentType.SURFACE, controller: this.controller })
+        // ijkplayer 单流：按原始比例显示，以高度铺满、宽度按宽高比计算，两侧留黑边
+        Column() {
+          XComponent({
+            id: 'tomato_video_ijk',
+            type: XComponentType.SURFACE,
+            libraryname: 'ijkplayer_napi',
+            controller: this.controller
+          })
+            .height('100%')
+            .aspectRatio(this.ijkAspectRatio())
+            .onLoad((context?: object) => {
+              this.onSurfaceReady(context);
+            })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .clip(true)
+
+        // 原生 surface 可能吞掉点击：加一层透明捕获层，保证点击能唤出/隐藏工具栏
+        Column()
           .width('100%')
           .height('100%')
-          .onLoad(() => {
-            if (this.opened) {
-              // 画面组件被重建：把新的 SurfaceId 重新交给播放器
-              this.engine.reattachSurface();
-              return;
-            }
-            this.open();
-          })
+          .backgroundColor(Color.Transparent)
           .onClick(() => this.toggleControls())
 
         Stack({ alignContent: Alignment.Center }) {
@@ -345,6 +485,26 @@ export struct VideoPlayerPage {
           .hitTestBehavior(HitTestMode.None)
         }
 
+        // 非致命提示（如音轨编码不受支持）：短暂显示，不打断播放
+        if (this.videoState.notice.length > 0) {
+          Column() {
+            Text(this.videoState.notice)
+              .fontSize(14)
+              .fontColor(Color.White)
+              .textAlign(TextAlign.Center)
+              .maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+              .backgroundColor($r('app.color.player_scrim'))
+              .borderRadius(10)
+          }
+          .width('100%')
+          .height('100%')
+          .justifyContent(FlexAlign.Start)
+          .padding({ left: 24, right: 24, top: 64 })
+          .hitTestBehavior(HitTestMode.None)
+        }
+
         if (this.controlsVisible) {
           this.topBar()
           this.bottomBar()
@@ -361,7 +521,7 @@ export struct VideoPlayerPage {
         const code: number = event.keyCode;
         if (code === KeyCode.KEYCODE_SPACE || code === KeyCode.KEYCODE_MEDIA_PLAY_PAUSE ||
           code === KeyCode.KEYCODE_ENTER || code === KeyCode.KEYCODE_DPAD_CENTER) {
-          this.engine.toggle();
+          this.controllerToggle();
           this.controlsVisible = true;
           this.scheduleHide();
           return;
@@ -399,7 +559,7 @@ export struct VideoPlayerPage {
             if (this.effectiveDuration() > 0) {
               const ratio: number = event.offsetX / 360;
               const target: number = this.dragValue + ratio * this.effectiveDuration();
-              this.engine.seekTo(target);
+              this.controllerSeekTo(target);
             }
             this.seekHint = '';
             this.scheduleHide();
@@ -428,7 +588,7 @@ export struct VideoPlayerPage {
           .fontColor(Color.White)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.videoState.buffering ? '缓冲中…' : '')
+        Text(this.videoState.buffering ? '缓冲中…' : 'ijk')
           .fontSize(11)
           .fontColor(Color.White)
       }
@@ -459,7 +619,7 @@ export struct VideoPlayerPage {
           .selectedColor($r('app.color.brand'))
           .onChange((value: number, mode: SliderChangeMode) => {
             if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
-              this.engine.seekTo(value);
+              this.controllerSeekTo(value);
               this.scheduleHide();
             }
           })
@@ -492,7 +652,7 @@ export struct VideoPlayerPage {
           .fontColor(Color.White)
           .backgroundColor($r('app.color.brand'))
           .onClick(() => {
-            this.engine.toggle();
+            this.controllerToggle();
             this.scheduleHide();
           })
 
@@ -561,7 +721,7 @@ export struct VideoPlayerPage {
         MenuItem({ content: speed === this.videoState.speed ? `✓ ${PlaybackSpeeds.label(speed)}` :
           PlaybackSpeeds.label(speed) })
           .onClick(() => {
-            this.engine.setSpeed(speed);
+            this.controllerSetSpeed(speed);
             this.scheduleHide();
           })
       }, (speed: number) => `${speed}`)
@@ -580,7 +740,7 @@ export struct VideoPlayerPage {
           content: track.index === this.videoState.selectedAudioId ? `✓ ${track.label}` : track.label
         })
           .onClick(() => {
-            this.engine.selectTrack(track.index);
+            this.controllerSelectTrack(track.index);
             this.scheduleHide();
           })
       }, (track: TrackOption) => `a${track.index}`)
@@ -592,7 +752,7 @@ export struct VideoPlayerPage {
     Menu() {
       MenuItem({ content: this.videoState.selectedSubtitleId === -1 ? '✓ 关闭字幕' : '关闭字幕' })
         .onClick(() => {
-          this.engine.selectTrack(-1);
+          this.controllerSelectTrack(-1);
           this.scheduleHide();
         })
       if (this.videoState.subtitleTracks.length === 0) {
@@ -604,7 +764,7 @@ export struct VideoPlayerPage {
           content: track.index === this.videoState.selectedSubtitleId ? `✓ ${track.label}` : track.label
         })
           .onClick(() => {
-            this.engine.selectTrack(track.index);
+            this.controllerSelectTrack(track.index);
             this.scheduleHide();
           })
       }, (track: TrackOption) => `s${track.index}`)

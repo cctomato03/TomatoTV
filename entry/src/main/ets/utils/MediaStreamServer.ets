@@ -17,6 +17,8 @@ class RequestState {
   buffer: string = '';
   headerLength: number = -1;
   handled: boolean = false;
+  /** 每个连接独立的解码器：多个连接并发续读时不能共用流式解码状态 */
+  decoder: util.TextDecoder = util.TextDecoder.create('utf-8');
 }
 
 /**
@@ -39,7 +41,6 @@ export class MediaStreamServer {
   private entries: Map<string, StreamEntry> = new Map<string, StreamEntry>();
   private clients: Map<string, FileSystemClient> = new Map<string, FileSystemClient>();
   private encoder: util.TextEncoder = new util.TextEncoder('utf-8');
-  private decoder: util.TextDecoder = util.TextDecoder.create('utf-8');
 
   static get(): MediaStreamServer {
     if (MediaStreamServer.instance === null) {
@@ -151,7 +152,7 @@ export class MediaStreamServer {
       if (state.handled) {
         return;
       }
-      state.buffer += this.decoder.decodeWithStream(new Uint8Array(info.message));
+      state.buffer += state.decoder.decodeWithStream(new Uint8Array(info.message));
       const index: number = state.buffer.indexOf('\r\n\r\n');
       if (index < 0) {
         if (state.buffer.length > 16384) {

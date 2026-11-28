@@ -18,6 +18,11 @@
 /.idea_modules
 *.iml
 /.vscode
+/.cache
+
+# ---- Native / clangd 生成 ----
+/.clang-tidy
+/.clangd
 
 # ---- 构建产物（由 Release 分发，不入库） ----
 *.hap

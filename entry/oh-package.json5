@@ -5,5 +5,8 @@
   "main": "",
   "author": "cctomato",
   "license": "Apache-2.0",
-  "dependencies": {}
+  "dependencies": {
+    "@ohos/ijkplayer": "2.0.13",
+    "libffprobe.so": "file:./src/main/cpp/types/libffprobe"
+  }
 }
